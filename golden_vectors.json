@@ -1,0 +1,99 @@
+{
+  "_comment": [
+    "Golden vectors for the Telegraph Track 2 evaluation script.",
+    "DIRECTION: a HIGH score is good. A LOW score is bad.",
+    "The range is 0.0 to 1.0. The best score is 1.0. The worst score is 0.0.",
+    "The source of this convention is the Telegraph whitepaper v1.0,",
+    "section 7.4 (the router sends traffic in proportion to the score) and",
+    "section 4.3 (a score above 0.70 is named as a possible overscore).",
+    "The script returns `1.0 - brier`. Malformed input gets 0.0.",
+    "Each `expected` value is a dyadic rational. Thus f64 holds it exactly.",
+    "The host compares the bits of the result. It does not use a tolerance."
+  ],
+  "vectors": [
+    {
+      "name": "perfect_negative",
+      "ground_truth": "{\"label\": 0}",
+      "response": "{\"confidence\": 0.0}",
+      "expected": 1.0
+    },
+    {
+      "name": "perfect_positive",
+      "ground_truth": "{\"label\": 1}",
+      "response": "{\"confidence\": 1.0}",
+      "expected": 1.0
+    },
+    {
+      "name": "worst_negative",
+      "ground_truth": "{\"label\": 0}",
+      "response": "{\"confidence\": 1.0}",
+      "expected": 0.0
+    },
+    {
+      "name": "worst_positive",
+      "ground_truth": "{\"label\": 1}",
+      "response": "{\"confidence\": 0.0}",
+      "expected": 0.0
+    },
+    {
+      "name": "no_information_negative",
+      "ground_truth": "{\"label\": 0}",
+      "response": "{\"confidence\": 0.5}",
+      "expected": 0.75
+    },
+    {
+      "name": "no_information_positive",
+      "ground_truth": "{\"label\": 1}",
+      "response": "{\"confidence\": 0.5}",
+      "expected": 0.75
+    },
+    {
+      "name": "good_positive_quarter",
+      "ground_truth": "{\"label\": 1}",
+      "response": "{\"confidence\": 0.75}",
+      "expected": 0.9375
+    },
+    {
+      "name": "good_negative_quarter",
+      "ground_truth": "{\"label\": 0}",
+      "response": "{\"confidence\": 0.25}",
+      "expected": 0.9375
+    },
+    {
+      "name": "bad_positive_eighth",
+      "ground_truth": "{\"label\": 1}",
+      "response": "{\"confidence\": 0.125}",
+      "expected": 0.234375
+    },
+    {
+      "name": "bad_negative_eighth",
+      "ground_truth": "{\"label\": 0}",
+      "response": "{\"confidence\": 0.875}",
+      "expected": 0.234375
+    },
+    {
+      "name": "integer_confidence_zero",
+      "ground_truth": "{\"label\": 1}",
+      "response": "{\"confidence\": 0}",
+      "expected": 0.0
+    },
+    {
+      "name": "integer_confidence_one",
+      "ground_truth": "{\"label\": 0}",
+      "response": "{\"confidence\": 1}",
+      "expected": 0.0
+    },
+    {
+      "name": "extra_fields_are_ignored",
+      "ground_truth": "{\"label\": 1, \"source\": \"oracle\"}",
+      "response": "{\"confidence\": 0.75, \"model\": \"m1\"}",
+      "expected": 0.9375
+    },
+    {
+      "name": "whitespace_is_ignored",
+      "ground_truth": "  {  \"label\" : 0 }  ",
+      "response": "\n{\n  \"confidence\"\t: 0.25\n}\n",
+      "expected": 0.9375
+    }
+  ]
+}

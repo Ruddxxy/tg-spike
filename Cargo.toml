@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/eval-script", "crates/host-runner", "crates/miner-sim"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# The release profile keeps the WASM module small.
+# `panic = "abort"` removes the unwind tables.
+# The score function must not panic. Thus unwind support is not necessary.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

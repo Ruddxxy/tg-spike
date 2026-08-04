@@ -1,0 +1,27 @@
+[package]
+name = "host-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# wasmtime runs the compiled eval-script WASM module.
+# This crate uses the wasmtime crate API directly. It does not shell out
+# to the wasmtime CLI.
+# Version 45 is the newest release that this machine's rustc (1.93.0) can
+# build. Versions 46 and 47 need rustc 1.94.0, which is not on this
+# machine. Version 45.0.3 lists rustc 1.93.0 as its own minimum, so it is
+# an exact match, not a downgrade of convenience.
+wasmtime = "45"
+# wasmtime-wasi gives WASI preview1 support. The host runner needs this
+# to load a wasm32-wasip1 module, which imports WASI functions.
+wasmtime-wasi = "45"
+# serde and serde_json read the golden vector file.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# anyhow gives host-side error handling with context.
+anyhow = "1"
+# eval-script is imported ONLY for the shared MAX_INPUT_BYTES constant.
+# This crate still loads the module as raw .wasm bytes through wasmtime.
+# It never calls eval-script natively for scoring.
+eval-script = { path = "../eval-script" }
