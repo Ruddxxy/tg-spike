@@ -160,10 +160,7 @@ pub fn responses_for(archetype: Archetype, dataset: &Dataset, seed: ResponseSeed
 /// `P(label = 1 | reported = r) = (B * r) / (B * r + (1 - B) * (1 - r))`.
 /// With `B = 0.5` this equals `r` exactly. With a skewed base rate,
 /// such as `B = 0.9`, it does not equal `r`. This gap is a fact about
-/// the data set, not a bug in this function. The calibration test in
-/// `tests/calibration.rs` checks the balanced data set for this
-/// reason, and checks the skewed data set against the formula above,
-/// not against `r`.
+/// the data set, not a bug in this function.
 fn calibrated_answer(a: f64, item: &Item, rng: &mut Rng) -> (f64, bool) {
     let a_eff = 0.5 + (a - 0.5) * item.signal;
     let c = if a_eff <= 0.5 + 1e-9 {

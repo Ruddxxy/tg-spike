@@ -2,9 +2,12 @@
 //!
 //! This crate is the canonical score script for Track 2 of the
 //! Telegraph Protocol hackathon spike. A blockchain validator loads
-//! this crate as a WASM module. The validator calls the exported
-//! functions with a ground truth value and a miner response value.
-//! The module returns a score.
+//! this crate as a WASM module. The module exports three functions:
+//! `alloc`, `dealloc`, and `rank_answer`. The validator calls
+//! `rank_answer` with a question, a ground truth value, and a miner
+//! answer value. The module returns a score. This wave of the ABI
+//! does not read the question bytes; see the `abi` module doc
+//! comment for the exact argument order and the exact rule order.
 //!
 //! ## Score direction
 //!
@@ -66,9 +69,11 @@
 //!
 //! ## Module layout
 //!
-//! - `abi`: the exported `alloc`, `dealloc`, `score`,
-//!   `score_log_loss`, and `score_batch` functions, plus the raw
-//!   memory bound checks and the input size cap check.
+//! - `abi`: the exported `alloc`, `dealloc`, and `rank_answer`
+//!   functions, plus the raw memory bound checks and the input size
+//!   cap check. This module also keeps `score`, `score_log_loss`,
+//!   and `score_batch` as plain, non-exported functions, for the
+//!   test suite and for native, host-side use.
 //! - `math`: the hand written `ln` function, Kahan summation, and
 //!   the total order sort used for the batch mean.
 //! - `metrics`: the Brier score, the log loss score, and the batch

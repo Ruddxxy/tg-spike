@@ -367,69 +367,6 @@ fn rank_of(rows: &[LeaderboardRow], archetype: Archetype) -> Option<usize> {
         .map(|row| row.rank)
 }
 
-/// This function makes a side by side text table of a Brier leaderboard
-/// and a log loss leaderboard.
-///
-/// The table has one row per archetype found in `brier`. Each row shows
-/// the Brier rank and score next to the log loss rank and score for the
-/// same archetype. When the two ranks differ, the function marks the
-/// row with a clear tag, so a reader can see where the two metrics do
-/// not agree.
-///
-/// An archetype that is in `brier` but not in `log_loss` gets a marked
-/// row that says the archetype is missing, instead of a panic.
-#[must_use]
-pub fn render_side_by_side(
-    brier: &[LeaderboardRow],
-    log_loss: &[LeaderboardRow],
-    title: &str,
-) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "{title}");
-    let _ = writeln!(
-        out,
-        "{:<20} {:>10} {:>12} {:>10} {:>12}  note",
-        "archetype", "brier_rank", "brier_mean", "ll_rank", "ll_mean"
-    );
-    for brier_row in brier {
-        let archetype = brier_row.archetype;
-        match log_loss.iter().find(|row| row.archetype == archetype) {
-            Some(ll_row) => {
-                let note = if brier_row.rank != ll_row.rank {
-                    format!(
-                        "<-- RANK DIFFERS (brier #{}, logloss #{})",
-                        brier_row.rank, ll_row.rank
-                    )
-                } else {
-                    String::new()
-                };
-                let _ = writeln!(
-                    out,
-                    "{:<20} {:>10} {:>12.6} {:>10} {:>12.6}  {}",
-                    archetype.name(),
-                    brier_row.rank,
-                    brier_row.mean_score,
-                    ll_row.rank,
-                    ll_row.mean_score,
-                    note
-                );
-            }
-            None => {
-                let _ = writeln!(
-                    out,
-                    "{:<20} {:>10} {:>12.6} {:>10} {:>12}  <-- MISSING FROM LOG LOSS TABLE",
-                    archetype.name(),
-                    brier_row.rank,
-                    brier_row.mean_score,
-                    "-",
-                    "-"
-                );
-            }
-        }
-    }
-    out
-}
-
 /// This function gives the rank of an archetype, or 0 if it is absent.
 ///
 /// This helper exists for callers outside this module that need a
@@ -593,47 +530,5 @@ mod tests {
         let eject = build_standings(&results, AggregationModel::Eject);
         let text = compare_orderings(&sak, &eject);
         assert!(text.contains("the SAME in both models"));
-    }
-
-    #[test]
-    fn render_side_by_side_marks_rank_disagreement() {
-        let brier = vec![
-            LeaderboardRow {
-                rank: 1,
-                archetype: Archetype::Oracle,
-                mean_score: 0.99,
-                median_score: 0.99,
-                n_malformed: 0,
-                n_abstained: 0,
-            },
-            LeaderboardRow {
-                rank: 2,
-                archetype: Archetype::NoisyGood,
-                mean_score: 0.9,
-                median_score: 0.9,
-                n_malformed: 0,
-                n_abstained: 0,
-            },
-        ];
-        let log_loss = vec![
-            LeaderboardRow {
-                rank: 2,
-                archetype: Archetype::Oracle,
-                mean_score: 0.98,
-                median_score: 0.98,
-                n_malformed: 0,
-                n_abstained: 0,
-            },
-            LeaderboardRow {
-                rank: 1,
-                archetype: Archetype::NoisyGood,
-                mean_score: 0.99,
-                median_score: 0.99,
-                n_malformed: 0,
-                n_abstained: 0,
-            },
-        ];
-        let text = render_side_by_side(&brier, &log_loss, "test");
-        assert!(text.contains("RANK DIFFERS"));
     }
 }

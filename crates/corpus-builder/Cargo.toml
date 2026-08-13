@@ -1,0 +1,16 @@
+[package]
+name = "corpus-builder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# "raw_value" lets this crate capture a miner response as the exact
+# original byte span from the feed body (via `Box<RawValue>`), instead of
+# parsing it into a Value tree and re-printing it. That keeps
+# `miner_answer` byte-pinned to what the daemon actually sent.
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+ureq = { version = "2", features = ["json"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

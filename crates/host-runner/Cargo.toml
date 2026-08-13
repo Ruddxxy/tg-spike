@@ -21,6 +21,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # anyhow gives host-side error handling with context.
 anyhow = "1"
+# sha2 hashes the .wasm file. The hash goes into the golden result
+# file, so the cross host check can prove the wazero side result file
+# scored the same .wasm build this run loaded.
+sha2 = "0.10"
 # eval-script is imported ONLY for the shared MAX_INPUT_BYTES constant.
 # This crate still loads the module as raw .wasm bytes through wasmtime.
 # It never calls eval-script natively for scoring.

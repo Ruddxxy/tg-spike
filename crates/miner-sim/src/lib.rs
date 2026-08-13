@@ -15,9 +15,13 @@
 //!
 //! ## Rules this crate keeps
 //!
-//! - The crate scores every response through the WASM boundary. The
-//!   crate never scores a response with native Rust code. Only the
-//!   compiled module tells the truth about a validator.
+//! - The crate scores every miner through the WASM boundary. It never
+//!   scores a response with native Rust code. Only the compiled module
+//!   tells the truth about a validator. The published ABI has one
+//!   scoring entry point, `rank_answer`, and this crate calls only that
+//!   one. An earlier version of this crate also scored a native,
+//!   probabilistic log loss metric; that metric tested a confidence
+//!   field the real ABI does not have, so it is gone, not ported.
 //! - The crate uses its own PRNG. It does not use the `rand` crate. The
 //!   same seed gives the same output on every machine, forever.
 //! - The crate does not change `eval-script`. That crate is the system

@@ -334,21 +334,20 @@ fn bootstrap_rank_flips_are_reproducible_for_a_fixed_seed() {
 }
 
 #[test]
-fn oracle_ranks_first_under_both_metrics() {
-    let Some(mut instance) = load_instance_or_skip("oracle_ranks_first_under_both_metrics") else {
+fn oracle_ranks_first_under_the_brier_metric() {
+    let Some(mut instance) = load_instance_or_skip("oracle_ranks_first_under_the_brier_metric")
+    else {
         return;
     };
 
-    for metric in Metric::ALL {
-        let (rows, _results) = score_balanced(&mut instance, metric);
-        let top = rows
-            .first()
-            .expect("the leaderboard must have at least one row");
-        assert_eq!(
-            top.archetype,
-            Archetype::Oracle,
-            "metric {} did not rank oracle first",
-            metric.name()
-        );
-    }
+    let (rows, _results) = score_balanced(&mut instance, Metric::Brier);
+    let top = rows
+        .first()
+        .expect("the leaderboard must have at least one row");
+    assert_eq!(
+        top.archetype,
+        Archetype::Oracle,
+        "metric {} did not rank oracle first",
+        Metric::Brier.name()
+    );
 }

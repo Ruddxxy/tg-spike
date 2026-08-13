@@ -24,7 +24,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use wasmtime::{Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
+use wasmtime::{Engine, ExternType, Instance, Linker, Memory, Module, Store, TypedFunc};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::WasiCtxBuilder;
 
@@ -139,23 +139,24 @@ pub enum AllocOutcome {
     Rejected,
 }
 
-/// This is the result of one full call to a scoring function, through
-/// the whole alloc/write/call/dealloc cycle.
+/// This is the result of one full call to `rank_answer`, through the
+/// whole write/call/free cycle.
 ///
 /// A validator report needs more than the score value. It also needs
-/// to know whether the module's own `alloc` cap rejected the ground
-/// truth or the response before the scoring function ran at all. See
-/// [`ScriptInstance::score_outcome`].
+/// to know whether the module's own `alloc` cap rejected the question,
+/// the ground truth, or the miner answer before `rank_answer` ran at
+/// all. See [`ScriptInstance::rank_answer_outcome`].
 #[derive(Debug, Clone, Copy)]
-pub struct ScoreOutcome {
+pub struct RankAnswerOutcome {
     /// The score. This is `0.0` when `alloc_rejected` is `true`.
-    pub value: f64,
-    /// `true` when the module's `alloc` cap rejected the ground truth
-    /// or the response before the host called the scoring function.
-    /// `false` means the scoring function itself produced `value`. A
-    /// `false` result can still carry a `value` of `0.0`, for the
-    /// module's own reasons, such as invalid JSON. Read `value` and
-    /// `alloc_rejected` together to tell which defence fired.
+    pub value: f32,
+    /// `true` when the module's `alloc` cap rejected the question, the
+    /// ground truth, or the miner answer before the host called
+    /// `rank_answer`. `false` means `rank_answer` itself produced
+    /// `value`. A `false` result can still carry a `value` of `0.0`,
+    /// for the module's own reasons, such as invalid JSON. Read
+    /// `value` and `alloc_rejected` together to tell which defence
+    /// fired.
     pub alloc_rejected: bool,
 }
 
@@ -169,12 +170,12 @@ pub struct ScriptInstance {
     memory: Memory,
     alloc_fn: TypedFunc<u32, u32>,
     dealloc_fn: TypedFunc<(u32, u32), ()>,
-    score_fn: TypedFunc<(u32, u32, u32, u32), f64>,
-    score_log_loss_fn: TypedFunc<(u32, u32, u32, u32), f64>,
-    score_batch_fn: TypedFunc<(u32, u32), f64>,
+    rank_answer_fn: TypedFunc<(u32, u32, u32, u32, u32, u32), f32>,
     instantiation_path: InstantiationPath,
     export_names: Vec<String>,
+    function_export_names: Vec<String>,
     file_size_bytes: u64,
+    wasm_sha256: String,
 }
 
 impl ScriptInstance {
@@ -182,12 +183,13 @@ impl ScriptInstance {
     ///
     /// It reads the file, compiles it, checks its imports, builds a WASI
     /// preview1 linker with an empty context, and instantiates the module.
-    /// It then finds the five ABI exports. It returns an error if any step
-    /// fails.
+    /// It then finds the three ABI exports: `alloc`, `dealloc`, and
+    /// `rank_answer`. It returns an error if any step fails.
     pub fn load(wasm_path: &Path) -> Result<Self> {
         let wasm_bytes = std::fs::read(wasm_path)
             .with_context(|| format!("cannot read wasm file at {}", wasm_path.display()))?;
         let file_size_bytes = wasm_bytes.len() as u64;
+        let wasm_sha256 = crate::golden::sha256_hex(&wasm_bytes);
 
         let engine = Engine::default();
         let module = Module::new(&engine, &wasm_bytes).wasm_context(format!(
@@ -196,6 +198,17 @@ impl ScriptInstance {
         ))?;
 
         let export_names: Vec<String> = module.exports().map(|e| e.name().to_string()).collect();
+        // This finds only the function exports, not `memory` or a
+        // global. Section 1 of the host report checks this narrower
+        // list against the published ABI surface: exactly `alloc`,
+        // `dealloc`, and `rank_answer`. `memory` and any global export
+        // are expected, and they are not functions, so they must not
+        // count against that check.
+        let function_export_names: Vec<String> = module
+            .exports()
+            .filter(|e| matches!(e.ty(), ExternType::Func(_)))
+            .map(|e| e.name().to_string())
+            .collect();
 
         let instantiation_path = if module
             .imports()
@@ -238,27 +251,21 @@ impl ScriptInstance {
         let dealloc_fn = instance
             .get_typed_func::<(u32, u32), ()>(&mut store, "dealloc")
             .wasm_context("module has no 'dealloc' export with the right type")?;
-        let score_fn = instance
-            .get_typed_func::<(u32, u32, u32, u32), f64>(&mut store, "score")
-            .wasm_context("module has no 'score' export with the right type")?;
-        let score_log_loss_fn = instance
-            .get_typed_func::<(u32, u32, u32, u32), f64>(&mut store, "score_log_loss")
-            .wasm_context("module has no 'score_log_loss' export with the right type")?;
-        let score_batch_fn = instance
-            .get_typed_func::<(u32, u32), f64>(&mut store, "score_batch")
-            .wasm_context("module has no 'score_batch' export with the right type")?;
+        let rank_answer_fn = instance
+            .get_typed_func::<(u32, u32, u32, u32, u32, u32), f32>(&mut store, "rank_answer")
+            .wasm_context("module has no 'rank_answer' export with the right type")?;
 
         Ok(Self {
             store,
             memory,
             alloc_fn,
             dealloc_fn,
-            score_fn,
-            score_log_loss_fn,
-            score_batch_fn,
+            rank_answer_fn,
             instantiation_path,
             export_names,
+            function_export_names,
             file_size_bytes,
+            wasm_sha256,
         })
     }
 
@@ -267,14 +274,33 @@ impl ScriptInstance {
         self.instantiation_path
     }
 
-    /// This gives the list of export names found in the module.
+    /// This gives the list of every export name found in the module,
+    /// of any kind: function, memory, or global.
     pub fn export_names(&self) -> &[String] {
         &self.export_names
+    }
+
+    /// This gives the list of function export names found in the
+    /// module. It does not include `memory` or any global export.
+    pub fn function_export_names(&self) -> &[String] {
+        &self.function_export_names
     }
 
     /// This gives the size of the `.wasm` file in bytes.
     pub fn file_size_bytes(&self) -> u64 {
         self.file_size_bytes
+    }
+
+    /// This gives the lowercase hex SHA-256 hash of the `.wasm` file
+    /// bytes this instance loaded.
+    ///
+    /// This is the same hash the `wazero-runner` golden mode writes
+    /// into its own result file. The cross host check in this crate
+    /// compares this hash against that file's hash, to stop a stale
+    /// wazero result file from faking agreement with a different
+    /// `.wasm` build.
+    pub fn wasm_sha256(&self) -> &str {
+        &self.wasm_sha256
     }
 
     /// This gives the current size of the module linear memory, in
@@ -343,143 +369,160 @@ impl ScriptInstance {
         Ok(())
     }
 
-    /// This runs the full alloc/write/call/dealloc cycle for `score`.
+    /// This writes one `rank_answer` field into module linear memory.
+    ///
+    /// It follows the fixed host convention that the go-tester
+    /// reference host and the `wazero-runner` tool both use: a zero
+    /// length field is `ptr=0, len=0`, and `alloc` is never called for
+    /// it. A non-empty field goes through the normal `alloc`-then-write
+    /// cycle in [`ScriptInstance::write_bytes`].
+    ///
+    /// A zero length read never touches the pointer on the module
+    /// side, so a host that always called `alloc(0)` would still get
+    /// the same score. This host matches the convention exactly
+    /// anyway, so a side-by-side call trace between this host and the
+    /// wazero host also matches, not only the final score.
+    fn write_field(&mut self, data: &[u8]) -> Result<AllocOutcome> {
+        if data.is_empty() {
+            return Ok(AllocOutcome::Granted(0, 0));
+        }
+        self.write_bytes(data)
+    }
+
+    /// This frees one field block that [`ScriptInstance::write_field`]
+    /// made, on a best-effort basis.
+    ///
+    /// It does nothing for a zero length field, because
+    /// [`ScriptInstance::write_field`] never calls `alloc` for one, so
+    /// there is no block to free.
+    fn free_field(&mut self, ptr: u32, len: u32) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        self.free(ptr, len)
+    }
+
+    /// This runs the full write/call/free cycle for `rank_answer`.
     ///
     /// It gives back only the score value. When the module's `alloc`
-    /// cap rejects the input, this gives back `0.0`, the same value the
-    /// scoring function itself would give for an input over the cap.
-    /// Use [`ScriptInstance::score_outcome`] to also learn whether that
-    /// rejection happened.
-    pub fn score(&mut self, gt: &[u8], resp: &[u8]) -> Result<f64> {
-        self.score_outcome(gt, resp).map(|outcome| outcome.value)
-    }
-
-    /// This runs the full alloc/write/call/dealloc cycle for `score` and
-    /// reports whether the module's `alloc` cap rejected the ground
-    /// truth or the response before the scoring function ran.
-    ///
-    /// It writes `gt` and `resp` into linear memory, calls `score`, then
-    /// frees both blocks. It frees the blocks even if the call itself
-    /// returns an error, on a best-effort basis, so memory does not leak
-    /// on a partial failure. A rejected allocation skips the call to
-    /// `score` and skips `dealloc` for the rejected block, because there
-    /// is no block to free.
-    pub fn score_outcome(&mut self, gt: &[u8], resp: &[u8]) -> Result<ScoreOutcome> {
-        self.run_score_call(gt, resp, |me, gt_ptr, gt_len, resp_ptr, resp_len| {
-            me.score_fn
-                .call(&mut me.store, (gt_ptr, gt_len, resp_ptr, resp_len))
-        })
-    }
-
-    /// This runs the full alloc/write/call/dealloc cycle for
-    /// `score_log_loss`. See [`ScriptInstance::score`] for the rejected
-    /// allocation behavior.
-    pub fn score_log_loss(&mut self, gt: &[u8], resp: &[u8]) -> Result<f64> {
-        self.score_log_loss_outcome(gt, resp)
+    /// cap rejects one of the three fields, this gives back `0.0`, the
+    /// same value `rank_answer` itself would give for an input over
+    /// the cap. Use [`ScriptInstance::rank_answer_outcome`] to also
+    /// learn whether that rejection happened.
+    pub fn rank_answer(&mut self, question: &[u8], gt: &[u8], ma: &[u8]) -> Result<f32> {
+        self.rank_answer_outcome(question, gt, ma)
             .map(|outcome| outcome.value)
     }
 
-    /// This runs the full alloc/write/call/dealloc cycle for
-    /// `score_log_loss` and reports whether the module's `alloc` cap
-    /// rejected the input first. See
-    /// [`ScriptInstance::score_outcome`] for the full rule.
-    pub fn score_log_loss_outcome(&mut self, gt: &[u8], resp: &[u8]) -> Result<ScoreOutcome> {
-        self.run_score_call(gt, resp, |me, gt_ptr, gt_len, resp_ptr, resp_len| {
-            me.score_log_loss_fn
-                .call(&mut me.store, (gt_ptr, gt_len, resp_ptr, resp_len))
-        })
-    }
-
-    /// This is the shared alloc/write/call/dealloc cycle for the two
-    /// two-input score functions. `call` is the wasmtime call itself.
+    /// This runs the full write/call/free cycle for `rank_answer` and
+    /// reports whether the module's `alloc` cap rejected the question,
+    /// the ground truth, or the miner answer before `rank_answer` ran.
     ///
-    /// A rejected allocation on either side never reaches `call`. The
-    /// worst score, `0.0`, is exactly what the scoring function would
-    /// have returned anyway for an input over the cap, so this shortcut
-    /// changes no visible score, only the work the host does to get
-    /// there.
-    fn run_score_call(
+    /// It writes `question`, `gt`, and `ma` into linear memory, in that
+    /// order, following the argument order the published ABI uses. It
+    /// calls `rank_answer`, then frees every block it allocated. It
+    /// frees the blocks even if the call itself returns an error, on a
+    /// best-effort basis, so memory does not leak on a partial
+    /// failure. A rejected allocation on any field skips the call to
+    /// `rank_answer` and skips `dealloc` for the fields with no block
+    /// to free.
+    pub fn rank_answer_outcome(
         &mut self,
+        question: &[u8],
         gt: &[u8],
-        resp: &[u8],
-        call: impl FnOnce(&mut Self, u32, u32, u32, u32) -> wasmtime::Result<f64>,
-    ) -> Result<ScoreOutcome> {
-        let gt_outcome = self
-            .write_bytes(gt)
-            .context("cannot write ground_truth bytes")?;
+        ma: &[u8],
+    ) -> Result<RankAnswerOutcome> {
+        let q_outcome = self
+            .write_field(question)
+            .context("cannot write question bytes")?;
+        let (q_ptr, q_len) = match q_outcome {
+            AllocOutcome::Granted(ptr, len) => (ptr, len),
+            AllocOutcome::Rejected => {
+                // The module's cap rejected the question before any
+                // read. Do not call `rank_answer`. There is no block to
+                // free.
+                return Ok(RankAnswerOutcome {
+                    value: 0.0,
+                    alloc_rejected: true,
+                });
+            }
+        };
+
+        let gt_outcome = match self.write_field(gt) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                // Best effort: free the question block before we give
+                // up.
+                let _ = self.free_field(q_ptr, q_len);
+                return Err(e).context("cannot write ground_truth bytes");
+            }
+        };
         let (gt_ptr, gt_len) = match gt_outcome {
             AllocOutcome::Granted(ptr, len) => (ptr, len),
             AllocOutcome::Rejected => {
-                // The module's cap rejected ground_truth before any
-                // read. Do not call the scoring function. There is no
-                // block to free.
-                return Ok(ScoreOutcome {
+                // The ground truth was rejected. Free the question
+                // block the host already holds, then stop. Do not call
+                // `rank_answer`.
+                let free_q = self.free_field(q_ptr, q_len);
+                free_q.context(
+                    "cannot free question block after a rejected ground_truth allocation",
+                )?;
+                return Ok(RankAnswerOutcome {
                     value: 0.0,
                     alloc_rejected: true,
                 });
             }
         };
 
-        let resp_outcome = match self.write_bytes(resp) {
+        let ma_outcome = match self.write_field(ma) {
             Ok(outcome) => outcome,
             Err(e) => {
-                // Best effort: free the ground_truth block before we
-                // give up.
-                let _ = self.free(gt_ptr, gt_len);
-                return Err(e).context("cannot write response bytes");
+                // Best effort: free the question and ground_truth
+                // blocks before we give up.
+                let _ = self.free_field(q_ptr, q_len);
+                let _ = self.free_field(gt_ptr, gt_len);
+                return Err(e).context("cannot write miner answer bytes");
             }
         };
-        let (resp_ptr, resp_len) = match resp_outcome {
+        let (ma_ptr, ma_len) = match ma_outcome {
             AllocOutcome::Granted(ptr, len) => (ptr, len),
             AllocOutcome::Rejected => {
-                // The response was rejected. Free the ground_truth
-                // block the host already holds, then stop. Do not call
-                // the scoring function.
-                let free_gt = self.free(gt_ptr, gt_len);
-                free_gt.context(
-                    "cannot free ground_truth block after a rejected response allocation",
+                // The miner answer was rejected. Free the question and
+                // ground_truth blocks the host already holds, then
+                // stop. Do not call `rank_answer`.
+                let free_q = self.free_field(q_ptr, q_len);
+                let free_gt = self.free_field(gt_ptr, gt_len);
+                free_q.context(
+                    "cannot free question block after a rejected miner answer allocation",
                 )?;
-                return Ok(ScoreOutcome {
+                free_gt.context(
+                    "cannot free ground_truth block after a rejected miner answer allocation",
+                )?;
+                return Ok(RankAnswerOutcome {
                     value: 0.0,
                     alloc_rejected: true,
                 });
             }
         };
 
-        let call_result = call(self, gt_ptr, gt_len, resp_ptr, resp_len);
+        let call_result = self.rank_answer_fn.call(
+            &mut self.store,
+            (q_ptr, q_len, gt_ptr, gt_len, ma_ptr, ma_len),
+        );
 
-        // Free both blocks on a best-effort basis. This runs whether the
-        // call above worked or trapped, so memory does not leak.
-        let free_gt = self.free(gt_ptr, gt_len);
-        let free_resp = self.free(resp_ptr, resp_len);
+        // Free every block on a best-effort basis. This runs whether
+        // the call above worked or trapped, so memory does not leak.
+        let free_q = self.free_field(q_ptr, q_len);
+        let free_gt = self.free_field(gt_ptr, gt_len);
+        let free_ma = self.free_field(ma_ptr, ma_len);
 
-        let value = call_result.wasm_context("call to a score function failed")?;
+        let value = call_result.wasm_context("call to 'rank_answer' failed")?;
+        free_q.context("cannot free question block after a successful call")?;
         free_gt.context("cannot free ground_truth block after a successful call")?;
-        free_resp.context("cannot free response block after a successful call")?;
-        Ok(ScoreOutcome {
+        free_ma.context("cannot free miner answer block after a successful call")?;
+        Ok(RankAnswerOutcome {
             value,
             alloc_rejected: false,
         })
-    }
-
-    /// This runs the full alloc/write/call/dealloc cycle for
-    /// `score_batch`.
-    ///
-    /// When the module's `alloc` cap rejects the batch input, this
-    /// gives back `0.0` at once. It skips the call to `score_batch` and
-    /// skips `dealloc`, because there is no block to free.
-    pub fn score_batch(&mut self, batch_json: &[u8]) -> Result<f64> {
-        let outcome = self
-            .write_bytes(batch_json)
-            .context("cannot write batch bytes")?;
-        let (ptr, len) = match outcome {
-            AllocOutcome::Granted(ptr, len) => (ptr, len),
-            AllocOutcome::Rejected => return Ok(0.0),
-        };
-        let call_result = self.score_batch_fn.call(&mut self.store, (ptr, len));
-        let free_result = self.free(ptr, len);
-        let value = call_result.wasm_context("call to 'score_batch' failed")?;
-        free_result.context("cannot free batch block after a successful call")?;
-        Ok(value)
     }
 }

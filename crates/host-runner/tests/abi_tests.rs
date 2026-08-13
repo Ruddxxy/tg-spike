@@ -1,7 +1,7 @@
 //! These are integration tests for the host runner. They load a real
 //! compiled `.wasm` module and check the same properties that the report
-//! binary checks: golden vectors, 1000-run bit stability, batch order
-//! invariance, and the malformed input matrix.
+//! binary checks: the export surface, golden vectors, 1000-run bit
+//! stability, and the malformed input matrix.
 //!
 //! These tests need a compiled `eval-script` `.wasm` file. On a clean
 //! checkout, that file does not exist yet. When a test cannot find it, it
@@ -63,6 +63,28 @@ macro_rules! skip_if_none {
 }
 
 #[test]
+fn export_surface_is_exactly_alloc_dealloc_and_rank_answer() {
+    let paths = available_wasm_paths();
+    skip_if_none!(paths);
+
+    for (label, wasm_path) in &paths {
+        let instance = ScriptInstance::load(wasm_path)
+            .unwrap_or_else(|e| panic!("cannot load module for target '{label}': {e:?}"));
+        let mut function_exports: Vec<&str> = instance
+            .function_export_names()
+            .iter()
+            .map(String::as_str)
+            .collect();
+        function_exports.sort_unstable();
+        assert_eq!(
+            function_exports,
+            vec!["alloc", "dealloc", "rank_answer"],
+            "target '{label}': the published ABI is exactly alloc, dealloc, rank_answer"
+        );
+    }
+}
+
+#[test]
 fn golden_vectors_match_by_bit_equality() {
     let paths = available_wasm_paths();
     skip_if_none!(paths);
@@ -80,19 +102,24 @@ fn golden_vectors_match_by_bit_equality() {
             .unwrap_or_else(|e| panic!("cannot load module for target '{label}': {e:?}"));
         for vector in &vectors {
             let got = instance
-                .score(vector.ground_truth.as_bytes(), vector.response.as_bytes())
+                .rank_answer(
+                    b"",
+                    vector.ground_truth.as_bytes(),
+                    vector.response.as_bytes(),
+                )
                 .unwrap_or_else(|e| {
                     panic!(
-                        "call to 'score' failed for vector '{}' on '{label}': {e:?}",
+                        "call to 'rank_answer' failed for vector '{}' on '{label}': {e:?}",
                         vector.name
                     )
                 });
+            let expected_f32 = vector.expected as f32;
             assert_eq!(
                 got.to_bits(),
-                vector.expected.to_bits(),
+                expected_f32.to_bits(),
                 "vector '{}' on target '{label}': expected {} got {}",
                 vector.name,
-                vector.expected,
+                expected_f32,
                 got
             );
         }
@@ -100,17 +127,17 @@ fn golden_vectors_match_by_bit_equality() {
 }
 
 #[test]
-fn score_is_bit_stable_across_1000_runs() {
+fn rank_answer_is_bit_stable_across_1000_runs() {
     let paths = available_wasm_paths();
     skip_if_none!(paths);
 
     let gt = br#"{"label": 1}"#;
-    let resp = br#"{"confidence": 0.75}"#;
+    let ma = br#"{"confidence": 0.75}"#;
 
     for (label, wasm_path) in &paths {
         let mut instance = ScriptInstance::load(wasm_path)
             .unwrap_or_else(|e| panic!("cannot load module for target '{label}': {e:?}"));
-        let report = checks::check_score_repeat_stability(&mut instance, gt, resp)
+        let report = checks::check_rank_answer_repeat_stability(&mut instance, b"", gt, ma)
             .unwrap_or_else(|e| panic!("1000-run check failed on '{label}': {e:?}"));
         assert_eq!(
             report.distinct_count, 1,
@@ -121,40 +148,18 @@ fn score_is_bit_stable_across_1000_runs() {
 }
 
 #[test]
-fn batch_score_is_order_invariant() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
-
-    for (label, wasm_path) in &paths {
-        let mut instance = ScriptInstance::load(wasm_path)
-            .unwrap_or_else(|e| panic!("cannot load module for target '{label}': {e:?}"));
-        let (results, pass) = checks::check_batch_order_invariance(&mut instance)
-            .unwrap_or_else(|e| panic!("order invariance check failed on '{label}': {e:?}"));
-        assert!(
-            pass,
-            "target '{label}': batch order changed the result: {}",
-            results
-                .iter()
-                .map(|r| format!("{}={}", r.name, r.bits_hex))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-}
-
-#[test]
 fn malformed_inputs_all_return_worst_score_and_never_trap() {
     let paths = available_wasm_paths();
     skip_if_none!(paths);
 
     let matrix = cases::malformed_cases();
-    let worst_bits = 0.0_f64.to_bits();
+    let worst_bits = 0.0_f32.to_bits();
 
     for (label, wasm_path) in &paths {
         let mut instance = ScriptInstance::load(wasm_path)
             .unwrap_or_else(|e| panic!("cannot load module for target '{label}': {e:?}"));
         for case in &matrix {
-            let result = instance.score(&case.ground_truth, &case.response);
+            let result = instance.rank_answer(b"", &case.ground_truth, &case.response);
             match result {
                 // No case in the current matrix sets `expect_worst_score`
                 // to false. This arm stays here in case a future case
@@ -185,7 +190,7 @@ fn fresh_instance_matches_reused_instance() {
     skip_if_none!(paths);
 
     let gt = br#"{"label": 0}"#;
-    let resp = br#"{"confidence": 0.25}"#;
+    let ma = br#"{"confidence": 0.25}"#;
 
     for (label, wasm_path) in &paths {
         let mut instance = ScriptInstance::load(wasm_path)
@@ -194,10 +199,10 @@ fn fresh_instance_matches_reused_instance() {
         // so this test can catch state that leaks between calls.
         for _ in 0..5 {
             instance
-                .score(br#"{"label": 1}"#, br#"{"confidence": 0.9}"#)
+                .rank_answer(b"", br#"{"label": 1}"#, br#"{"confidence": 0.9}"#)
                 .unwrap_or_else(|e| panic!("warm-up call failed on '{label}': {e:?}"));
         }
-        let report = checks::check_fresh_vs_reused(wasm_path.as_path(), &mut instance, gt, resp)
+        let report = checks::check_fresh_vs_reused(wasm_path.as_path(), &mut instance, b"", gt, ma)
             .unwrap_or_else(|e| panic!("fresh-vs-reused check failed on '{label}': {e:?}"));
         assert!(
             report.pass,
@@ -267,10 +272,10 @@ fn rejected_oversized_alloc_does_not_grow_linear_memory() {
 /// This proves a rejected oversized `alloc` call leaves the module in a
 /// usable state.
 ///
-/// After the rejection, a normal golden-vector alloc/write/score/dealloc
-/// cycle must still give the exact expected score, by bit equality. This
-/// rules out a corrupted allocator or leftover state from the rejected
-/// request.
+/// After the rejection, a normal golden-vector alloc/write/call/free
+/// cycle must still give the exact expected score, by bit equality.
+/// This rules out a corrupted allocator or leftover state from the
+/// rejected request.
 #[test]
 fn valid_cycle_after_a_rejected_alloc_still_gives_the_right_golden_vector_score() {
     let paths = available_wasm_paths();
@@ -302,16 +307,21 @@ fn valid_cycle_after_a_rejected_alloc_still_gives_the_right_golden_vector_score(
         // A normal score cycle right after the rejection must still work
         // and must still match the golden vector by bit equality.
         let got = instance
-            .score(vector.ground_truth.as_bytes(), vector.response.as_bytes())
+            .rank_answer(
+                b"",
+                vector.ground_truth.as_bytes(),
+                vector.response.as_bytes(),
+            )
             .unwrap_or_else(|e| {
-                panic!("call to 'score' failed on '{label}' after a rejected alloc: {e:?}")
+                panic!("call to 'rank_answer' failed on '{label}' after a rejected alloc: {e:?}")
             });
+        let expected_f32 = vector.expected as f32;
         assert_eq!(
             got.to_bits(),
-            vector.expected.to_bits(),
+            expected_f32.to_bits(),
             "target '{label}': after a rejected alloc, vector '{}' expected {} got {}",
             vector.name,
-            vector.expected,
+            expected_f32,
             got
         );
     }

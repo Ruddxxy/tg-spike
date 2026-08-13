@@ -1,9 +1,10 @@
 //! This binary is the miner simulator report.
 //!
 //! The binary makes synthetic miners with a known true quality. It
-//! scores every miner through the compiled `eval-script` WASM module.
-//! It checks that the leaderboard order matches the known quality
-//! order. It prints one report to standard output.
+//! scores every miner through the compiled `eval-script` WASM module,
+//! with the Brier metric, the one scoring rule the published ABI
+//! supports. It checks that the leaderboard order matches the known
+//! quality order. It prints one report to standard output.
 //!
 //! `println!` is correct in this file. This binary IS the report; the
 //! printed text is the deliverable, not debug output.
@@ -21,7 +22,7 @@
 //! # Two aggregation models
 //!
 //! This report prints standings under both aggregation models, for
-//! every data set and every metric:
+//! every data set:
 //!
 //! - `score_and_keep` keeps every miner ranked, even a miner that never
 //!   answered or sent bad text. This is NOT the protocol rule. The
@@ -37,7 +38,7 @@ use anyhow::{Context, Result};
 use host_runner::instance::ScriptInstance;
 
 use miner_sim::types::{
-    AggregationModel, Archetype, DatasetShape, Metric, MinerResult, ResponseSeed, VerdictLine,
+    AggregationModel, Archetype, DatasetShape, Metric, ResponseSeed, VerdictLine,
 };
 use miner_sim::{archetype, bootstrap, dataset, leaderboard, scoring, verdict};
 
@@ -65,21 +66,6 @@ struct FailedInvariant {
     model_name: &'static str,
     /// The verdict line that failed.
     line: VerdictLine,
-}
-
-/// This is a record of one archetype whose Brier rank differs from its
-/// log loss rank, kept for the final summary. The comparison uses the
-/// `score_and_keep` model, because that model always ranks every
-/// archetype, so the two metrics always have a matching row to compare.
-struct RankDisagreement {
-    /// The name of the data set shape where the disagreement showed up.
-    shape_name: &'static str,
-    /// The archetype with the disagreement.
-    archetype: Archetype,
-    /// The rank under the Brier metric.
-    brier_rank: usize,
-    /// The rank under the log loss metric.
-    log_loss_rank: usize,
 }
 
 fn main() -> ExitCode {
@@ -120,21 +106,14 @@ fn run() -> Result<bool> {
     print_header(&wasm_path, &instance, response_seed);
 
     let mut failed_invariants: Vec<FailedInvariant> = Vec::new();
-    let mut rank_disagreements: Vec<RankDisagreement> = Vec::new();
 
     for shape in DatasetShape::ALL {
-        run_shape(
-            &mut instance,
-            shape,
-            response_seed,
-            &mut failed_invariants,
-            &mut rank_disagreements,
-        )?;
+        run_shape(&mut instance, shape, response_seed, &mut failed_invariants)?;
     }
 
     run_gap_ladder(&mut instance)?;
 
-    print_summary(&failed_invariants, &rank_disagreements);
+    print_summary(&failed_invariants);
 
     Ok(failed_invariants.is_empty())
 }
@@ -157,19 +136,17 @@ fn print_header(wasm_path: &Path, instance: &ScriptInstance, response_seed: Resp
 /// This function runs the full report for one data set shape.
 ///
 /// It builds one data set, makes responses for every archetype, scores
-/// every archetype under both metrics, and builds standings under both
-/// aggregation models. It prints the standings side by side, the
-/// ejected miner lists, the order comparison, the side by side metric
-/// view, the verdict blocks for both models, and the bootstrap rank
-/// flip tables. On the skewed shape it also prints the Brier Skill
-/// Score table. It records every failed invariant and every rank
-/// disagreement into the caller's lists.
+/// every archetype with the Brier metric, and builds standings under
+/// both aggregation models. It prints the standings side by side, the
+/// ejected miner list, the order comparison, and the verdict blocks for
+/// both models, then the bootstrap rank flip table. On the skewed shape
+/// it also prints the Brier Skill Score table. It records every failed
+/// invariant into the caller's list.
 fn run_shape(
     instance: &mut ScriptInstance,
     shape: DatasetShape,
     response_seed: ResponseSeed,
     failed_invariants: &mut Vec<FailedInvariant>,
-    rank_disagreements: &mut Vec<RankDisagreement>,
 ) -> Result<()> {
     let shape_name = shape.name();
     let ds = dataset::generate(shape, ITEMS, SEED);
@@ -182,32 +159,21 @@ fn run_shape(
     println!("hard signal threshold: {:.6}", ds.hard_signal_threshold);
     println!();
 
-    let mut results_by_metric: Vec<(Metric, Vec<MinerResult>)> = Vec::new();
-
-    for metric in Metric::ALL {
-        let mut results = Vec::with_capacity(Archetype::ALL.len());
-        for arch in Archetype::ALL {
-            let responses = archetype::responses_for(arch, &ds, response_seed);
-            let result = scoring::score_miner(instance, &ds, arch, &responses, metric)
-                .with_context(|| {
-                    format!(
-                        "cannot score archetype {} on shape {shape_name} with metric {}",
-                        arch.name(),
-                        metric.name()
-                    )
-                })?;
-            results.push(result);
-        }
-        results_by_metric.push((metric, results));
+    let mut brier_results = Vec::with_capacity(Archetype::ALL.len());
+    for arch in Archetype::ALL {
+        let responses = archetype::responses_for(arch, &ds, response_seed);
+        let result = scoring::score_miner(instance, &ds, arch, &responses, Metric::Brier)
+            .with_context(|| {
+                format!(
+                    "cannot score archetype {} on shape {shape_name}",
+                    arch.name(),
+                )
+            })?;
+        brier_results.push(result);
     }
 
-    let brier_results = &results_by_metric[0].1;
-    let log_loss_results = &results_by_metric[1].1;
-
-    let brier_sak = leaderboard::build_standings(brier_results, AggregationModel::ScoreAndKeep);
-    let brier_eject = leaderboard::build_standings(brier_results, AggregationModel::Eject);
-    let ll_sak = leaderboard::build_standings(log_loss_results, AggregationModel::ScoreAndKeep);
-    let ll_eject = leaderboard::build_standings(log_loss_results, AggregationModel::Eject);
+    let brier_sak = leaderboard::build_standings(&brier_results, AggregationModel::ScoreAndKeep);
+    let brier_eject = leaderboard::build_standings(&brier_results, AggregationModel::Eject);
 
     println!(
         "{}",
@@ -226,46 +192,8 @@ fn run_shape(
         leaderboard::render_ejected(&brier_eject, "BRIER EJECTED (eject model)")
     );
 
-    println!(
-        "{}",
-        leaderboard::render_standings_side_by_side(
-            &ll_sak,
-            &ll_eject,
-            "LOG LOSS STANDINGS: score_and_keep vs eject (higher is better)"
-        )
-    );
-    println!("{}", leaderboard::compare_orderings(&ll_sak, &ll_eject));
-    println!(
-        "{}",
-        leaderboard::render_ejected(&ll_eject, "LOG LOSS EJECTED (eject model)")
-    );
-
-    println!(
-        "{}",
-        leaderboard::render_side_by_side(
-            &brier_sak.ranked,
-            &ll_sak.ranked,
-            "SIDE BY SIDE: BRIER VS LOG LOSS (score_and_keep model, higher is better)"
-        )
-    );
-
-    for arch in Archetype::ALL {
-        let brier_rank = leaderboard::rank_of_archetype(&brier_sak.ranked, arch);
-        let log_loss_rank = leaderboard::rank_of_archetype(&ll_sak.ranked, arch);
-        if brier_rank != 0 && log_loss_rank != 0 && brier_rank != log_loss_rank {
-            rank_disagreements.push(RankDisagreement {
-                shape_name,
-                archetype: arch,
-                brier_rank,
-                log_loss_rank,
-            });
-        }
-    }
-
     let brier_sak_lines = verdict::check_all(&brier_sak.ranked);
     let brier_eject_lines = verdict::check_all_eject(&brier_eject);
-    let ll_sak_lines = verdict::check_all(&ll_sak.ranked);
-    let ll_eject_lines = verdict::check_all_eject(&ll_eject);
 
     println!(
         "{}",
@@ -278,18 +206,6 @@ fn run_shape(
     println!(
         "{}",
         verdict::render(&brier_eject_lines, "VERDICT (brier, eject)")
-    );
-    println!(
-        "{}",
-        verdict::render(&ll_sak_lines, "VERDICT (log loss, score_and_keep)")
-    );
-    println!(
-        "note: the eject verdict below restates invariants 6 and 7. they now test the \
-         AGGREGATION layer (does the protocol remove the failing miner), not the scoring rule."
-    );
-    println!(
-        "{}",
-        verdict::render(&ll_eject_lines, "VERDICT (log loss, eject)")
     );
 
     for (model_name, lines) in [
@@ -307,24 +223,8 @@ fn run_shape(
             }
         }
     }
-    for (model_name, lines) in [
-        ("score_and_keep", &ll_sak_lines),
-        ("eject", &ll_eject_lines),
-    ] {
-        for line in lines {
-            if !line.passed {
-                failed_invariants.push(FailedInvariant {
-                    shape_name,
-                    metric_name: Metric::LogLoss.name(),
-                    model_name,
-                    line: line.clone(),
-                });
-            }
-        }
-    }
 
-    let brier_flips = bootstrap::rank_flips(brier_results, &brier_sak.ranked, RESAMPLES, SEED);
-    let log_loss_flips = bootstrap::rank_flips(log_loss_results, &ll_sak.ranked, RESAMPLES, SEED);
+    let brier_flips = bootstrap::rank_flips(&brier_results, &brier_sak.ranked, RESAMPLES, SEED);
 
     println!(
         "{}",
@@ -333,16 +233,9 @@ fn run_shape(
             "BOOTSTRAP RANK FLIPS (brier, score_and_keep model)"
         )
     );
-    println!(
-        "{}",
-        bootstrap::render_flips(
-            &log_loss_flips,
-            "BOOTSTRAP RANK FLIPS (log loss, score_and_keep model)"
-        )
-    );
 
     if shape == DatasetShape::Skewed {
-        let skill_rows = scoring::build_skill_table(brier_results, &ds);
+        let skill_rows = scoring::build_skill_table(&brier_results, &ds);
         println!(
             "{}",
             scoring::render_skill_table(&skill_rows, "BRIER SKILL SCORE TABLE (skewed data set)")
@@ -352,8 +245,10 @@ fn run_shape(
     Ok(())
 }
 
-/// This function runs the top two gap ladder on the balanced shape, for
-/// both metrics, and prints the result.
+/// This function runs the top two gap ladder on the balanced shape and
+/// prints the result. It loops over `Metric::ALL`, which today holds
+/// only `Metric::Brier`, so the report stays ready for a second metric
+/// without a rewrite if the protocol ever publishes one.
 ///
 /// The gap and the confidence range both use `mean(top) - mean(second)`,
 /// so a positive value always means the top archetype truly scores
@@ -402,10 +297,9 @@ fn run_gap_ladder(instance: &mut ScriptInstance) -> Result<()> {
 /// This function prints the final summary block of the report.
 ///
 /// It lists every failed invariant, with the data set shape, the
-/// metric, the aggregation model, and the numbers. It lists every
-/// archetype whose Brier rank differs from its log loss rank. It prints
-/// a clear pass or fail line at the end.
-fn print_summary(failed_invariants: &[FailedInvariant], rank_disagreements: &[RankDisagreement]) {
+/// metric, the aggregation model, and the numbers. It prints a clear
+/// pass or fail line at the end.
+fn print_summary(failed_invariants: &[FailedInvariant]) {
     println!("SUMMARY");
     println!("=======");
 
@@ -424,25 +318,6 @@ fn print_summary(failed_invariants: &[FailedInvariant], rank_disagreements: &[Ra
                 failure.line.number,
                 failure.line.statement,
                 failure.line.detail
-            );
-        }
-    }
-    println!();
-
-    if rank_disagreements.is_empty() {
-        println!("no archetype has a rank that differs between brier and log loss.");
-    } else {
-        println!(
-            "{} archetype(s) have a rank that differs between brier and log loss:",
-            rank_disagreements.len()
-        );
-        for d in rank_disagreements {
-            println!(
-                "  shape={} archetype={} brier_rank={} log_loss_rank={}",
-                d.shape_name,
-                d.archetype.name(),
-                d.brier_rank,
-                d.log_loss_rank
             );
         }
     }

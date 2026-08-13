@@ -1,9 +1,11 @@
 //! This module scores one miner through the WASM module.
 //!
-//! Every score in this crate must come from the compiled `eval-script`
-//! module. This module never computes a Brier score or a log loss score
-//! in native Rust. A native score would not prove anything about the
-//! artifact that a validator runs.
+//! Every score in this crate comes from the compiled `eval-script`
+//! module, through `rank_answer` at the WASM boundary. This crate never
+//! computes a score with native Rust code. Only the compiled module
+//! tells the truth about what a validator will do. The published ABI
+//! has one scoring entry point, `rank_answer`, and this module calls
+//! only that one.
 //!
 //! # Score direction
 //!
@@ -48,14 +50,18 @@ pub fn resolve_wasm_path() -> PathBuf {
         .join("eval_script.wasm")
 }
 
-/// This function scores every response of one miner through the WASM
-/// module.
+/// This function scores every response of one miner.
 ///
-/// The function calls `score` or `score_log_loss` for each item, in
-/// item order, using the ground truth text of that item and the response
-/// text at the same index. It counts malformed and abstained responses
-/// from the response kind. It does not read the score value to decide
-/// the count; the count comes only from `ResponseKind`.
+/// The function calls `rank_answer` at the WASM boundary, with an empty
+/// question, for each item, in item order, using the ground truth text
+/// of that item and the response text at the same index. The WASM
+/// module returns an `f32`. This function widens that value to `f64`
+/// at once, and every later step in this crate works in `f64`. It does
+/// not narrow the value a second time anywhere else.
+///
+/// The function counts malformed and abstained responses from the
+/// response kind. It does not read the score value to decide the
+/// count; the count comes only from `ResponseKind`.
 ///
 /// The function also finds the first failure of the miner. It scans the
 /// items in order. The first item with an `Abstain` response, or the
@@ -98,26 +104,19 @@ pub fn score_miner(
         let gt_bytes = item.ground_truth_json();
         let resp_bytes = response.json.as_bytes();
 
-        let raw = match metric {
-            Metric::Brier => instance
-                .score(gt_bytes.as_bytes(), resp_bytes)
-                .with_context(|| {
-                    format!(
-                        "call to 'score' failed for item {} of archetype {}",
-                        item.index,
-                        archetype.name()
-                    )
-                })?,
-            Metric::LogLoss => instance
-                .score_log_loss(gt_bytes.as_bytes(), resp_bytes)
-                .with_context(|| {
-                    format!(
-                        "call to 'score_log_loss' failed for item {} of archetype {}",
-                        item.index,
-                        archetype.name()
-                    )
-                })?,
-        };
+        // The question is empty. This wave of the ABI does not read it.
+        // `rank_answer` returns an `f32`. This is the ONLY place in this
+        // crate that widens a wasm score. No other step narrows it back.
+        let value = instance
+            .rank_answer(b"", gt_bytes.as_bytes(), resp_bytes)
+            .with_context(|| {
+                format!(
+                    "call to 'rank_answer' failed for item {} of archetype {}",
+                    item.index,
+                    archetype.name()
+                )
+            })?;
+        let raw: f64 = f64::from(value);
 
         if !raw.is_finite() || !(0.0..=1.0).contains(&raw) {
             bail!(
@@ -165,11 +164,9 @@ pub fn score_miner(
 /// This function builds the Brier Skill Score table for a list of
 /// scored miners.
 ///
-/// The table uses RAW Brier numbers, not the converted score. The
-/// caller must pass `results` that came from `score_miner` called with
-/// `Metric::Brier`. A result scored with `Metric::LogLoss` gives a
-/// meaningless row, because the raw loss formula below is specific to
-/// the Brier rule.
+/// The table uses RAW Brier numbers, not the converted score. The raw
+/// loss formula below is specific to the Brier rule, the only metric
+/// this crate scores.
 ///
 /// For each miner:
 ///

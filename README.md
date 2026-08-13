@@ -9,8 +9,13 @@ rewritten against the real specification. The value that carries over is the det
 discipline, the malformed-input matrix, and the simulator harness.
 
 ```
-167 tests passing   |   cargo test --workspace
+179 tests passing   |   cargo test --workspace
 ```
+
+`crates/miner-sim` is migrated to the `rank_answer` ABI. It builds, and `cargo test --workspace`
+passes. The migration also removed a real code path, not only wired one up: the old LogLoss metric,
+the calibration check that tested it, and the native batch order invariance check are gone, not
+ported. See [Build and run](#build-and-run) for why.
 
 ---
 
@@ -25,42 +30,62 @@ and no network access. Every failure returns the worst score rather than a trap.
 
 **`crates/host-runner`** — a native binary that stands in for a validator. It loads the compiled
 `.wasm` with the `wasmtime` crate, drives the pointer-and-length memory ABI, and asserts the
-properties the protocol needs: 1000 consecutive runs give bit-identical results, a batch score
-does not depend on the order of its items, a fixed table of golden vectors matches by bit
-equality, and a 27-case malformed-input matrix never traps. It loads the module as raw bytes,
-the same way a validator would.
+properties the protocol needs: 1000 consecutive `rank_answer` runs give bit-identical results, a
+fixed table of golden vectors matches by bit equality, and a 27-case malformed-input matrix never
+traps. It loads the module as raw bytes, the same way a validator would. It also checks that its
+own `wasmtime` results agree, bit for bit, with the Go `wazero-runner` tool's results for the same
+`.wasm` file — see [The ABI](#the-abi) and [Build and run](#build-and-run) below. Every check in
+this crate crosses the wasm boundary. An earlier version also had a native, non-wasm batch order
+invariance check; the batch scoring path it tested is not part of the published ABI, so that check
+is gone, not ported.
 
 **`crates/miner-sim`** — a simulator that answers a different question: does the scoring rule
-rank miners in the right order? It generates synthetic miners whose true quality it controls,
-scores every response **through the WASM boundary**, and checks the resulting leaderboard against
-invariants. It also separates the two layers the protocol has: the script produces a per-item
-score, and the protocol aggregates and applies the ejection rule. It reports a Brier Skill Score
-so "accurate" and "skilful" do not get confused.
+rank miners in the right order? It generates synthetic miners whose true quality it controls, and
+checks the resulting leaderboard against invariants. It scores the Brier metric **through the
+WASM boundary**, calling `rank_answer` the same way a validator would, the one scoring rule the
+published ABI supports. An earlier version also scored a LogLoss metric NATIVELY, since the ABI
+never exported one; that metric tested a probabilistic confidence field the real ABI does not have,
+so it is gone, not ported. It also separates the two layers the protocol has: the script produces a
+per-item score, and the protocol aggregates and applies the ejection rule. It reports a Brier Skill
+Score so "accurate" and "skilful" do not get confused.
 
 ---
 
 ## The ABI
 
+The published ABI has exactly three exports, plus `memory`:
+
 ```wat
 (memory (export "memory"))
-(func (export "alloc")          (param i32)             (result i32))
+(func (export "alloc")          (param i32)                         (result i32))
 (func (export "dealloc")        (param i32 i32))
-(func (export "score")          (param i32 i32 i32 i32) (result f64))
-(func (export "score_log_loss") (param i32 i32 i32 i32) (result f64))
-(func (export "score_batch")    (param i32 i32)         (result f64))
+(func (export "rank_answer")    (param i32 i32 i32 i32 i32 i32)      (result f32))
 ```
 
-`alloc` and `dealloc` are the memory protocol. `score` is the export the protocol specified.
-`score_log_loss` and `score_batch` are documented extensions: without an export that reaches
-them, link-time optimisation removes the hand-rolled `ln` and the summation code, and the spike
-would measure nothing.
+`alloc` and `dealloc` are the memory protocol. `rank_answer` is the one scoring export: it takes
+three `(ptr, len)` pairs — question, ground truth, miner answer — and returns an `f32` score. This
+wave of the ABI does not read the question bytes; the argument is still there, so a future wave can
+add question-aware scoring without another ABI break. `rank_answer` runs the same Brier computation
+the old `score` export ran, on the ground truth and the miner answer.
 
-The `wasm32-unknown-unknown` build also exports the linker symbols `__data_end` and `__heap_base`.
-The `wasm32-wasip1` build does not. A validator that compares export sets exactly would see two
-different modules.
+The old exports `score`, `score_log_loss`, and `score_batch` are **gone from the wasm surface**.
+They still exist as plain `pub fn` in the `eval-script` rlib (`eval_script::abi::score`,
+`eval_script::abi::score_log_loss`, `eval_script::abi::score_batch`, or the safer
+`eval_script::metrics::*_from_bytes` equivalents that take `&[u8]` instead of a raw pointer), so a
+native, host-side caller could still reach them directly. Today `eval-script`'s own test suite is
+the only caller left; `host-runner` and `miner-sim` used to call `score_log_loss` and `score_batch`
+natively for two checks, but those checks tested a metric and a batch path the published ABI does
+not have, so they are gone, not kept as a native fallback.
 
-**Call sequence.** The host calls `alloc(len)` for each input, writes the bytes into linear
-memory, calls `score`, then calls `dealloc` for each block.
+The `wasm32-unknown-unknown` build also exports the linker globals `__data_end` and `__heap_base`.
+These are rust-lld defaults, not part of the scored ABI. The protocol's own reference module
+exports them too.
+
+**Call sequence.** The host calls `alloc(len)` for each non-empty input, writes the bytes into
+linear memory, calls `rank_answer`, then calls `dealloc` for each block it allocated. **A zero
+length input is `ptr=0, len=0`, and `alloc` is not called for it.** Both `host-runner`
+(`wasmtime`) and `tools/wazero-runner` (`wazero`) follow this convention exactly, so the two hosts'
+memory traces agree, not only their scores.
 
 **`alloc` returns 0 to reject.** It returns 0 when the length is over `MAX_INPUT_BYTES`, when the
 layout is invalid, or when the allocator fails. The caller must check the returned value before
@@ -69,8 +94,20 @@ it uses it as an address. Address 0 is never a valid block.
 Inputs are UTF-8 JSON:
 
 - ground truth: `{"label": 0}` or `{"label": 1}`
-- miner response: `{"confidence": <float 0..1>}` — the probability of label 1
-- `score_batch`: `[{"ground_truth": {...}, "response": {...}}, ...]`
+- miner answer: `{"confidence": <float 0..1>}` — the probability of label 1
+
+---
+
+## Two hosts, one bit pattern
+
+The Telegraph network can run a wasm scoring module under more than one engine. This workspace
+carries two independent hosts for `eval-script`'s `.wasm` build: `crates/host-runner`
+(`wasmtime`, Rust) and `tools/wazero-runner` (`wazero`, Go). `host-runner` writes its own golden
+vector results to `target/golden-f32-wasmtime.json` and asserts, bit for bit, against
+`tools/wazero-runner`'s golden mode output. A wasmtime/wazero disagreement on the same `.wasm` file
+is a consensus-relevant defect, not a rounding nicety: two honest validators on different engines
+must never produce different Local Scores for the same input. See
+[Build and run](#build-and-run) for the exact run order this check needs.
 
 ---
 
@@ -208,28 +245,54 @@ there is no `From<u64>`.
 
 ## Build and run
 
+The cross host check (`host-runner` report section 6) needs a wazero side result file, so **build
+and run in this order**:
+
 ```bash
-# Build the script for the target the workspace uses.
+# 1. Build the script for the target the workspace uses.
 cargo build --release --target wasm32-unknown-unknown -p eval-script
 
-# Drive it as a validator would, and assert determinism.
+# 2. Produce the wazero side golden file, with the Go host, against that .wasm file.
+cd tools/wazero-runner
+go run . -golden ../../golden_vectors.json \
+  -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+  -out ../../target/golden-f32-wazero.json
+cd ../..
+
+# 3. Drive the module as a wasmtime validator would, assert determinism, and assert
+#    wasmtime/wazero agree bit for bit. This also writes target/golden-f32-wasmtime.json.
 cargo run -p host-runner --release
 
-# Rank synthetic miners through the WASM boundary.
+# 4. Run the miner simulator report. Exits non-zero on the one expected skewed-shape
+#    invariant failure documented below; that is not a build or test failure.
 cargo run -p miner-sim --release
 
-# Everything.
+# Every crate in the workspace.
 cargo test --workspace
 cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+cargo fmt --all -- --check
 ```
 
-`host-runner` takes an optional path argument, so the `wasm32-wasip1` module can be driven too:
+Skipping step 2 does not stop `host-runner` from running; its report section 6 fails on purpose,
+with the exact command above printed to fix it. Missing cross host evidence must not silently
+pass.
+
+`host-runner` takes an optional second path argument for the wazero result file, so a non-default
+location can be checked. The `wasm32-wasip1` module can be driven too, as the first argument:
 
 ```bash
 cargo build --release --target wasm32-wasip1 -p eval-script
-cargo run -p host-runner --release -- target/wasm32-wasip1/release/eval_script.wasm
+cargo run -p host-runner --release -- target/wasm32-wasip1/release/eval_script.wasm target/golden-f32-wazero.json
 ```
+
+**`crates/miner-sim` is migrated to `rank_answer`.** It calls `ScriptInstance::rank_answer` for
+the Brier metric, the same as `host-runner`. This is a real behavior change, not only a wiring
+change: the Brier score is now an `f32` returned from wasm, widened once to `f64` at the call
+site, so it round-trips `f64 -> f32 -> f64` and loses precision against the old pure `f64` path.
+`crates/miner-sim/src/scoring.rs` documents the exact call. An earlier version of this crate also
+scored a LogLoss metric NATIVELY, since the published ABI never exported one. That metric, and the
+calibration check that measured it, tested a probabilistic confidence field the real ABI does not
+have, so both are gone, not ported.
 
 `miner-sim` exits non-zero when an invariant fails. One invariant does fail on the skewed data
 set, on purpose: a miner that is calibrated against the item signal but blind to the class base

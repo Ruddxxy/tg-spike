@@ -1,10 +1,23 @@
 //! This module holds the functions the WASM host calls.
 //!
-//! The host calls `alloc` first, to get a block of memory inside
-//! the module. The host writes its input bytes into that block. The
-//! host then calls `score`, `score_log_loss`, or `score_batch` with
-//! the offset and the length of the block. The host calls `dealloc`
-//! when it no longer needs the block.
+//! The published ABI has three exports: `alloc`, `dealloc`, and
+//! `rank_answer`. The host calls `alloc` first, to get a block of
+//! memory inside the module. The host writes its input bytes into
+//! that block. The host then calls `rank_answer` with the offset
+//! and the length of each block. The host calls `dealloc` when it
+//! no longer needs a block.
+//!
+//! `rank_answer` takes three byte ranges: a question, a ground
+//! truth, and a miner answer. This wave does not read the question
+//! bytes. `rank_answer` scores the ground truth against the miner
+//! answer with the same Brier computation the old `score` export
+//! ran. See `rank_answer_impl` for the exact rule order.
+//!
+//! This module also keeps `score`, `score_log_loss`, and
+//! `score_batch` as plain Rust functions. These three functions are
+//! no longer part of the WASM export surface. The crate keeps them
+//! so the existing test suite and any native, host-side caller can
+//! still reach the same metrics directly.
 //!
 //! Every function in this module checks its input before it reads
 //! raw memory. A bad pointer must never cause a WASM trap. The
@@ -28,7 +41,10 @@
 //! round-trip a real native pointer through `u32` and back into a
 //! pointer, because that would read from the wrong address and
 //! could crash the test process. The tests instead check the error
-//! paths, which return before any raw memory read happens.
+//! paths, which return before any raw memory read happens, and they
+//! check any input-content rule (UTF-8, blank text, a golden score)
+//! through a plain `&[u8]` helper function, which never touches a
+//! raw pointer at all.
 
 use crate::error::ScoreError;
 use crate::metrics;
@@ -55,8 +71,22 @@ use std::alloc::{alloc as std_alloc, dealloc as std_dealloc, Layout};
 /// response size, so this check is the only defence against a
 /// miner response that wastes validator work through a large
 /// allocation.
-#[no_mangle]
-pub extern "C" fn alloc(len: u32) -> u32 {
+///
+/// This early cap check is a deliberate divergence from the
+/// reference module at
+/// `wasm-scoring-module/rust-module/src/lib.rs`. The reference
+/// `alloc` sets `HEAP_OFFSET = 0` when `aligned + size > HEAP_SIZE`,
+/// then it still returns the base pointer and it still advances
+/// `HEAP_OFFSET` by the full `size`, with no second bounds check.
+/// So a request bigger than its 1 MiB static buffer still returns a
+/// pointer that looks usable, and a write through that pointer runs
+/// past the end of the real buffer. This function closes that gap:
+/// an oversize `len` returns 0 before any memory work starts, so the
+/// caller never gets a pointer it should not use.
+///
+/// The wasm32 export wrapper for this function is `alloc`, further
+/// down this module.
+pub fn alloc_impl(len: u32) -> u32 {
     if len > MAX_INPUT_BYTES {
         return 0;
     }
@@ -74,19 +104,22 @@ pub extern "C" fn alloc(len: u32) -> u32 {
     ptr as u32
 }
 
-/// This function frees a block of memory that `alloc` made.
+/// This function frees a block of memory that `alloc_impl` made.
 ///
-/// The parameter `ptr` is the offset that `alloc` returned. The
+/// The parameter `ptr` is the offset that `alloc_impl` returned. The
 /// parameter `len` is the same `len` value the caller gave to
-/// `alloc`. The function does nothing if `ptr` is 0. The function
-/// does nothing if `len` does not fit a valid memory layout.
+/// `alloc_impl`. The function does nothing if `ptr` is 0. The
+/// function does nothing if `len` does not fit a valid memory
+/// layout.
 ///
 /// The caller must give back the same `ptr` and `len` pair that
-/// `alloc` gave out. A wrong pair can corrupt the allocator. This is
-/// the normal contract for a manual allocate-and-free pair of
-/// functions.
-#[no_mangle]
-pub extern "C" fn dealloc(ptr: u32, len: u32) {
+/// `alloc_impl` gave out. A wrong pair can corrupt the allocator.
+/// This is the normal contract for a manual allocate-and-free pair
+/// of functions.
+///
+/// The wasm32 export wrapper for this function is `dealloc`, further
+/// down this module.
+pub fn dealloc_impl(ptr: u32, len: u32) {
     if ptr == 0 {
         return;
     }
@@ -95,10 +128,35 @@ pub extern "C" fn dealloc(ptr: u32, len: u32) {
         None => return,
     };
     // SECURITY: this call trusts the host to give back the exact
-    // `ptr` and `len` pair that `alloc` gave out for this block. A
-    // host that breaks that rule can corrupt the allocator. That
-    // risk is inherent to a manual alloc and free ABI.
+    // `ptr` and `len` pair that `alloc_impl` gave out for this
+    // block. A host that breaks that rule can corrupt the
+    // allocator. That risk is inherent to a manual alloc and free
+    // ABI.
     unsafe { std_dealloc(ptr as *mut u8, layout) };
+}
+
+/// This function is the wasm32 export for `alloc_impl`.
+///
+/// A native build does not compile this function. This stops a
+/// native link from ever seeing a symbol named `alloc`, which could
+/// collide with another `alloc` symbol in the same native link. See
+/// `alloc_impl` for the full behaviour.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn alloc(len: u32) -> u32 {
+    alloc_impl(len)
+}
+
+/// This function is the wasm32 export for `dealloc_impl`.
+///
+/// A native build does not compile this function. This stops a
+/// native link from ever seeing a symbol named `dealloc`, which
+/// could collide with another `dealloc` symbol in the same native
+/// link. See `dealloc_impl` for the full behaviour.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn dealloc(ptr: u32, len: u32) {
+    dealloc_impl(ptr, len)
 }
 
 /// This function builds the memory layout for a block of `len`
@@ -200,6 +258,12 @@ fn read_bytes(ptr: u32, len: u32) -> Result<&'static [u8], ScoreError> {
 
 /// This function runs a two-input score function over two raw
 /// memory blocks and turns any error into the worst score, 0.0.
+///
+/// `score`, `score_log_loss`, and `rank_answer_impl` all route
+/// through this function. Each caller gives its own `scorer`
+/// function, so this function stays the one place that reads two
+/// raw blocks and turns a `Result` into the final worst-case-safe
+/// `f64`.
 fn run_pair_score(
     gt_ptr: u32,
     gt_len: u32,
@@ -225,7 +289,15 @@ fn run_pair_score(
 /// place at the ABI boundary that decides the worst-case output, so
 /// every score function in this module routes its result through
 /// here.
-fn finish(outcome: Result<f64, ScoreError>) -> f64 {
+///
+/// This function is `pub` so a host-side crate in this workspace can
+/// call the exact same clamp rule for a native, non-wasm score, instead
+/// of keeping its own copy of the rule. A copy is a defect waiting to
+/// happen: a future edit could change one copy and not the other, and
+/// a native check would then judge a value by a different rule than
+/// the wasm ABI boundary uses. Calling this function keeps the clamp
+/// rule in exactly one place, for every caller, wasm or native.
+pub fn finish(outcome: Result<f64, ScoreError>) -> f64 {
     match outcome {
         Ok(value) if value.is_finite() && (0.0..=1.0).contains(&value) => value,
         _ => 0.0,
@@ -240,8 +312,15 @@ fn finish(outcome: Result<f64, ScoreError>) -> f64 {
 /// `gt_ptr` and `gt_len`, and the response JSON bytes from
 /// `resp_ptr` and `resp_len`. The function returns 0.0 if any input
 /// is not correct, or if any input is bigger than `MAX_INPUT_BYTES`.
-#[no_mangle]
-pub extern "C" fn score(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_len: u32) -> f64 {
+///
+/// This function is no longer part of the WASM export surface. The
+/// published ABI now exports `rank_answer` in its place, which runs
+/// this same Brier computation on its ground truth and miner answer
+/// arguments. This function stays a plain `pub fn` so the existing
+/// test suite and a native, host-side caller can still reach the
+/// Brier metric directly, by its own pointer pair, without going
+/// through `rank_answer`.
+pub fn score(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_len: u32) -> f64 {
     run_pair_score(
         gt_ptr,
         gt_len,
@@ -259,8 +338,12 @@ pub extern "C" fn score(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_len: u32) 
 /// runs on the raw log loss value. The function returns 0.0 if any
 /// input is not correct, or if any input is bigger than
 /// `MAX_INPUT_BYTES`.
-#[no_mangle]
-pub extern "C" fn score_log_loss(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_len: u32) -> f64 {
+///
+/// This function is no longer part of the WASM export surface. See
+/// `score` above for the reason this function stays a plain
+/// `pub fn`: the existing test suite and a native, host-side caller
+/// still use it directly.
+pub fn score_log_loss(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_len: u32) -> f64 {
     run_pair_score(
         gt_ptr,
         gt_len,
@@ -278,10 +361,119 @@ pub extern "C" fn score_log_loss(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_l
 /// sort-then-Kahan-sum method this function uses to stay order
 /// independent. The function returns 0.0 if the input is not
 /// correct, or if the input is bigger than `MAX_INPUT_BYTES`.
-#[no_mangle]
-pub extern "C" fn score_batch(ptr: u32, len: u32) -> f64 {
+///
+/// This function is no longer part of the WASM export surface. See
+/// `score` above for the reason this function stays a plain
+/// `pub fn`: the existing test suite and a native, host-side caller
+/// still use it directly.
+pub fn score_batch(ptr: u32, len: u32) -> f64 {
     let outcome = read_bytes(ptr, len).and_then(metrics::batch_brier_from_bytes);
     finish(outcome)
+}
+
+/// This function scores a miner answer against a ground truth, on
+/// two already-read byte slices.
+///
+/// The function returns `Ok(0.0)`, not an error, for a miner answer
+/// that is valid UTF-8 text but is empty or holds only whitespace.
+/// A blank answer is a well formed "no answer", not a bad input, so
+/// it flows through `finish` the same way a real score would.
+///
+/// The function returns `Err(ScoreError::InvalidUtf8)` for a miner
+/// answer that is not valid UTF-8 text. This function checks that
+/// with the safe `core::str::from_utf8`, never with
+/// `core::str::from_utf8_unchecked`. This is a deliberate divergence
+/// from the reference module at
+/// `wasm-scoring-module/rust-module/src/lib.rs`, whose `read_str`
+/// calls `core::str::from_utf8_unchecked` on bytes the host
+/// supplies. That call has undefined behaviour whenever the host
+/// gives bytes that are not valid UTF-8, because the unchecked
+/// function trusts its caller instead of checking the bytes.
+///
+/// Past the blank check, this function runs the same computation
+/// the old `score` export ran: `metrics::brier_from_bytes` on the
+/// ground truth bytes and the miner answer bytes.
+fn rank_answer_scorer(gt_bytes: &[u8], ma_bytes: &[u8]) -> Result<f64, ScoreError> {
+    let ma_text = core::str::from_utf8(ma_bytes).map_err(|_| ScoreError::InvalidUtf8)?;
+    if ma_text.trim().is_empty() {
+        return Ok(0.0);
+    }
+    metrics::brier_from_bytes(gt_bytes, ma_bytes)
+}
+
+/// This function implements the `rank_answer` ABI export.
+///
+/// The published ABI type for every pointer and length parameter is
+/// `i32`, at the wasm valtype level. This function keeps the Rust
+/// parameter type `u32`, because `u32` and `i32` are the same wasm
+/// valtype, `i32`, so this is not a real type change from the
+/// host's point of view. A host that (wrongly) gives a negative
+/// value for one of these parameters gives this function a very
+/// large `u32` instead, through the same bit pattern. `check_len_cap`
+/// then rejects that large value as an oversize length, before
+/// `check_bounds` runs and before any memory read happens. So this
+/// `u32` view of the wasm `i32` valtype is safe, and it is
+/// deterministic: every host that gives the same bit pattern gets
+/// the same rejection.
+///
+/// `question_ptr` and `question_len` name the question argument.
+/// Wave 2 of this ABI migration will read the question bytes and
+/// use them to score an answer. This wave does not read them. The
+/// line right below this doc comment still binds them to named
+/// variables, not to `_`, so the parameter names stay visible in
+/// the function signature and in any caller that reads this code.
+///
+/// Past that, the function reads the ground truth bytes and the
+/// miner answer bytes with `read_bytes`, the same helper `score`
+/// uses. `read_bytes` keeps the `MAX_INPUT_BYTES` cap check and the
+/// bounds check. Any read error, for either input, scores 0.0. Past
+/// a successful read, `rank_answer_scorer` applies the miner answer
+/// rules: invalid UTF-8 scores 0.0, and a blank answer (empty, or
+/// whitespace only) scores exactly 0.0. Any other input runs through
+/// the same `metrics::brier_from_bytes` computation the old `score`
+/// export ran, in `f64`, through this same `run_pair_score` and
+/// `finish` path.
+///
+/// The wasm32 export wrapper for this function is `rank_answer`,
+/// further down this module.
+pub fn rank_answer_impl(
+    question_ptr: u32,
+    question_len: u32,
+    gt_ptr: u32,
+    gt_len: u32,
+    ma_ptr: u32,
+    ma_len: u32,
+) -> f32 {
+    let _wave_2_question = (question_ptr, question_len);
+
+    let score = run_pair_score(gt_ptr, gt_len, ma_ptr, ma_len, rank_answer_scorer);
+
+    // SINGLE NARROWING POINT. This is the only place in this crate
+    // that narrows an `f64` down to an `f32`. `finish`, inside
+    // `run_pair_score`, already clamps `score` into the closed
+    // range 0.0 to 1.0 in `f64`. Every `f64` value in that closed
+    // range narrows to an `f32` value in the same closed range, so
+    // this narrow cannot push the result out of range.
+    score as f32
+}
+
+/// This function is the wasm32 export for `rank_answer_impl`.
+///
+/// A native build does not compile this function. See `rank_answer_impl`
+/// for the full behaviour and for the argument order:
+/// question, then ground truth, then miner answer, each as a
+/// pointer and a length pair.
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub extern "C" fn rank_answer(
+    q_ptr: u32,
+    q_len: u32,
+    gt_ptr: u32,
+    gt_len: u32,
+    ma_ptr: u32,
+    ma_len: u32,
+) -> f32 {
+    rank_answer_impl(q_ptr, q_len, gt_ptr, gt_len, ma_ptr, ma_len)
 }
 
 #[cfg(test)]
@@ -302,23 +494,24 @@ mod tests {
 
     #[test]
     fn alloc_returns_nonzero_and_leaks_on_purpose() {
-        // This test does not call `dealloc`. Freeing a pointer that
-        // `alloc` truncated to 32 bits would corrupt the native
-        // heap. This ABI is only sound on a real 32-bit address
-        // space, which is what the wasm32 target gives it. The leak
-        // here is a few bytes for the life of the test process.
-        let ptr = alloc(16);
+        // This test does not call `dealloc_impl`. Freeing a pointer
+        // that `alloc_impl` truncated to 32 bits would corrupt the
+        // native heap. This ABI is only sound on a real 32-bit
+        // address space, which is what the wasm32 target gives it.
+        // The leak here is a few bytes for the life of the test
+        // process.
+        let ptr = alloc_impl(16);
         assert_ne!(ptr, 0);
     }
 
     #[test]
     fn alloc_of_zero_len_does_not_fail() {
-        assert_ne!(alloc(0), 0);
+        assert_ne!(alloc_impl(0), 0);
     }
 
     #[test]
     fn dealloc_of_null_pointer_does_nothing() {
-        dealloc(0, 16);
+        dealloc_impl(0, 16);
     }
 
     #[test]
@@ -326,22 +519,22 @@ mod tests {
         // A null pointer must stay a safe no-op for any length,
         // including a length of 0 and a length over the cap.
         for len in [0, 1, 16, MAX_INPUT_BYTES, MAX_INPUT_BYTES + 1, u32::MAX] {
-            dealloc(0, len);
+            dealloc_impl(0, len);
         }
     }
 
     #[test]
     fn alloc_at_the_cap_succeeds() {
-        // This test does not call `dealloc`. See
+        // This test does not call `dealloc_impl`. See
         // `alloc_returns_nonzero_and_leaks_on_purpose` above for why
-        // a native test never frees an `alloc` result.
-        let ptr = alloc(MAX_INPUT_BYTES);
+        // a native test never frees an `alloc_impl` result.
+        let ptr = alloc_impl(MAX_INPUT_BYTES);
         assert_ne!(ptr, 0);
     }
 
     #[test]
     fn alloc_one_byte_over_the_cap_returns_zero() {
-        assert_eq!(alloc(MAX_INPUT_BYTES + 1), 0);
+        assert_eq!(alloc_impl(MAX_INPUT_BYTES + 1), 0);
     }
 
     #[test]
@@ -351,7 +544,7 @@ mod tests {
         // A build that reached `std_alloc` with this size would ask
         // the allocator to grow the module memory past what a
         // 32-bit address space can hold.
-        assert_eq!(alloc(u32::MAX), 0);
+        assert_eq!(alloc_impl(u32::MAX), 0);
     }
 
     #[test]
@@ -444,14 +637,14 @@ mod tests {
     #[test]
     fn alloc_rejection_flows_end_to_end_to_the_worst_score() {
         // This test proves the full failure path: an oversize `len`
-        // makes `alloc` return the null pointer 0, and that same
-        // null pointer with the same nonzero `len`, when passed on
-        // to a score function, must produce the worst score, 0.0,
+        // makes `alloc_impl` return the null pointer 0, and that
+        // same null pointer with the same nonzero `len`, when passed
+        // on to a score function, must produce the worst score, 0.0,
         // through `read_bytes` and then `finish`. This is the exact
         // sequence a host follows: call `alloc`, then call a score
         // function with the pointer `alloc` gave back.
         let len = MAX_INPUT_BYTES + 1;
-        let ptr = alloc(len);
+        let ptr = alloc_impl(len);
         assert_eq!(ptr, 0);
         assert_eq!(read_bytes(ptr, len), Err(ScoreError::InputTooLarge));
         assert_eq!(score(ptr, len, 0, 0), 0.0);
@@ -483,5 +676,85 @@ mod tests {
         assert_eq!(finish(Ok(f64::INFINITY)), 0.0);
         assert_eq!(finish(Ok(-0.1)), 0.0);
         assert_eq!(finish(Ok(1.1)), 0.0);
+    }
+
+    #[test]
+    fn rank_answer_impl_scores_an_empty_miner_answer_as_exactly_zero() {
+        // Every pointer and length here is 0. A length of 0 skips
+        // the pointer check inside `read_bytes` for both reads, so
+        // this call never dereferences any address. This is the
+        // safe way to reach the "empty miner answer" rule through
+        // the real pointer-based entry point.
+        let result = rank_answer_impl(0, 0, 0, 0, 0, 0);
+        assert_eq!(result.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn rank_answer_impl_scores_an_oversize_miner_answer_as_zero() {
+        // ma_len is one byte over the cap. ma_ptr is a wild address
+        // that is never a valid block. The ground truth side reads
+        // an empty block first, which is safe, then `check_len_cap`
+        // rejects the oversize length before it ever reaches the
+        // wild pointer.
+        let over_cap = MAX_INPUT_BYTES + 1;
+        let result = rank_answer_impl(0, 0, 0, 0, 0xdead_beef, over_cap);
+        assert_eq!(result.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn rank_answer_impl_scores_a_null_pointer_with_nonzero_length_as_zero() {
+        // ma_ptr is null but ma_len is nonzero, so the pair does not
+        // name a real block. `read_bytes` rejects this before it
+        // ever dereferences the null pointer.
+        let result = rank_answer_impl(0, 0, 0, 0, 0, 5);
+        assert_eq!(result.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
+    fn rank_answer_scorer_scores_whitespace_only_text_as_exactly_zero() {
+        // A whitespace-only miner answer needs real byte content
+        // (a space, a tab, a newline). This module's native testing
+        // note says a test must never round-trip a real pointer
+        // through `u32`, so this test calls the plain `&[u8]`
+        // scorer helper directly, instead of building a pointer
+        // into real memory.
+        assert_eq!(
+            rank_answer_scorer(b"{\"label\": 1}", b" \t\n").unwrap(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn rank_answer_scorer_rejects_invalid_utf8() {
+        // Same reasoning as the whitespace test above: invalid UTF-8
+        // bytes need real content, so this goes through the plain
+        // `&[u8]` scorer helper, not a raw pointer.
+        let bad_utf8 = &[0xff, 0xfe, 0xfd];
+        assert_eq!(
+            rank_answer_scorer(b"{\"label\": 1}", bad_utf8),
+            Err(ScoreError::InvalidUtf8)
+        );
+    }
+
+    #[test]
+    fn rank_answer_scorer_matches_the_old_score_computation_for_a_golden_pair() {
+        // This is the same ground truth and response pair the
+        // `metrics` module's `brier_from_bytes_matches_golden_vector`
+        // test uses. `rank_answer_scorer` must give the same `f64`
+        // score, because it runs the exact same computation for any
+        // miner answer that is not blank.
+        let gt = b"{\"label\": 1}";
+        let ma = b"{\"confidence\": 0.75}";
+        let result = rank_answer_scorer(gt, ma).unwrap();
+        assert_eq!(result, 0.9375);
+
+        // 0.9375 is a dyadic rational, 15/16. An `f32` holds this
+        // value with no rounding error, the same as an `f64` does.
+        // Widening the `f32` literal back to `f64` with `f64::from`
+        // is a lossless conversion, so this equality proves the
+        // narrow this value takes at the single narrowing point in
+        // `rank_answer_impl` loses no precision for this golden
+        // pair.
+        assert_eq!(f64::from(0.9375_f32), result);
     }
 }

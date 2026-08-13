@@ -13,9 +13,11 @@ name = "miner-sim"
 path = "src/main.rs"
 
 [dependencies]
-# host-runner gives the wasmtime driver. The simulator scores every
-# response through the WASM boundary, not through native Rust. Only the
-# compiled module tells the truth about what a validator will do.
+# host-runner gives the wasmtime driver. The simulator scores the
+# Brier metric through the WASM boundary. Only the compiled module
+# tells the truth about what a validator will do for that metric. This
+# crate does not depend on eval-script directly; it never calls the
+# rlib natively, only through host-runner's wasmtime driver.
 host-runner = { path = "../host-runner" }
 # anyhow gives host-side error handling with context.
 anyhow = "1"

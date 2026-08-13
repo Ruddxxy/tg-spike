@@ -316,59 +316,39 @@ impl Archetype {
             Archetype::BayesCalibratedGood => "bayes_calibrated_good",
         }
     }
-
-    /// This function tells if the archetype reports a calibrated
-    /// confidence.
-    ///
-    /// A calibrated miner is correct about `c` of the time when it
-    /// reports confidence `c`. The calibration test checks only these
-    /// archetypes.
-    ///
-    /// `NoisyGood` and `NoisyMediocre` are calibrated only when the base
-    /// rate is 0.5. `BayesCalibratedGood` is calibrated at every base
-    /// rate.
-    ///
-    /// The `random` miner is not in this list. It reports a uniform
-    /// confidence that carries no information about the label. Thus the
-    /// share of label 1 items at a reported confidence `c` stays at the
-    /// base rate. It does not follow `c`.
-    #[must_use]
-    pub fn is_calibrated(self) -> bool {
-        matches!(
-            self,
-            Archetype::NoisyGood | Archetype::NoisyMediocre | Archetype::BayesCalibratedGood
-        )
-    }
 }
 
-/// A scoring rule that the WASM module gives.
+/// A scoring rule this crate uses.
+///
+/// The published ABI has exactly one scoring entry point,
+/// `rank_answer`, so this enum has exactly one variant today. It stays
+/// an enum, not a bare constant, so a report can still print a metric
+/// name next to a score, and so the type signature of `score_miner`
+/// stays ready for a second scoring rule if the protocol ever publishes
+/// one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Metric {
-    /// The converted Brier score. The export name is `score`.
+    /// The converted Brier score, through the WASM boundary.
     ///
-    /// The module returns `1.0 - brier`. A high value is good.
+    /// This metric calls `rank_answer`, the one scoring export the
+    /// published ABI has. The module returns `1.0 - brier`, as an
+    /// `f32`. This crate widens that value to `f64` once, at the call
+    /// site, and never narrows it again. A high value is good.
     ///
     /// The Brier rule is proper. A miner gets its best score when it
     /// reports its true belief.
     Brier,
-    /// The converted normalised log loss. The export name is
-    /// `score_log_loss`.
-    ///
-    /// The module returns `1.0 - normalised_log_loss`. A high value is
-    /// good.
-    LogLoss,
 }
 
 impl Metric {
     /// Every metric, in a fixed order.
-    pub const ALL: [Metric; 2] = [Metric::Brier, Metric::LogLoss];
+    pub const ALL: [Metric; 1] = [Metric::Brier];
 
     /// This function gives the short name of the metric.
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
-            Metric::Brier => "brier (score)",
-            Metric::LogLoss => "log_loss (score_log_loss)",
+            Metric::Brier => "brier (wasm: rank_answer)",
         }
     }
 }
