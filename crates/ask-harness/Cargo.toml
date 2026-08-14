@@ -1,0 +1,21 @@
+[package]
+name = "ask-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# PRIMITIVES ONLY. The workspace forbids an API wrapper library, so
+# there is no ethers, no alloy, and no x402 SDK here. Every crate below
+# is a cryptographic or encoding primitive: this crate builds the
+# EIP-712 payload and the secp256k1 signature by hand.
+#
+# k256 gives the secp256k1 curve and ECDSA. It does not know what
+# Ethereum is.
+k256 = { version = "0.13", features = ["ecdsa"] }
+# sha3 gives Keccak-256, which is the hash EIP-712 uses.
+sha3 = "0.10"
+# ureq is the same raw HTTP client the corpus builder uses.
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -3,3 +3,4 @@ corpus/
 tools/wazero-runner/wazero-runner
 reference/
 __pycache__/
+corpus/ask-cache/

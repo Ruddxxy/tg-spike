@@ -5,6 +5,7 @@ members = [
     "crates/host-runner",
     "crates/corpus-builder",
     "crates/corpus-eval",
+    "crates/ask-harness",
 ]
 
 [workspace.package]
