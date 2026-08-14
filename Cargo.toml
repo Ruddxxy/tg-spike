@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/eval-script", "crates/host-runner", "crates/miner-sim", "crates/corpus-builder"]
+members = [
+    "crates/eval-script",
+    "crates/host-runner",
+    "crates/corpus-builder",
+    "crates/corpus-eval",
+]
 
 [workspace.package]
 version = "0.1.0"

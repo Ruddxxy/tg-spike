@@ -71,24 +71,43 @@
 //!
 //! - `abi`: the exported `alloc`, `dealloc`, and `rank_answer`
 //!   functions, plus the raw memory bound checks and the input size
-//!   cap check. This module also keeps `score`, `score_log_loss`,
-//!   and `score_batch` as plain, non-exported functions, for the
-//!   test suite and for native, host-side use.
-//! - `math`: the hand written `ln` function, Kahan summation, and
-//!   the total order sort used for the batch mean.
-//! - `metrics`: the Brier score, the log loss score, and the batch
-//!   mean score.
-//! - `parse`: the JSON parsing and field validation.
+//!   cap check.
+//! - `value`: the defensive reader that turns a short text into a
+//!   number and a unit, or into nothing.
+//! - `text`: the token reader and the overlap score.
+//! - `score`: the dispatch between the numeric path and the text
+//!   path, and the tolerance curve.
 //! - `error`: the `ScoreError` type shared by every fallible
 //!   function in this crate.
+//!
+//! ## Why this crate is NOT `no_std`
+//!
+//! A `no_std` build needs its own global allocator. The usual choice
+//! for a small wasm module is a bump allocator over a static buffer,
+//! which never frees. That is exactly the design in the protocol's
+//! own reference module, and it carries the defect this crate already
+//! documents: its `alloc` sets the offset back to 0 on overflow and
+//! still returns a pointer that looks usable.
+//!
+//! This crate keeps `std` so that it keeps the real allocator, which
+//! frees a block when `dealloc` runs. A validator calls the module
+//! many times in one instance, so a leak matters more here than a
+//! smaller module does.
+//!
+//! `no_std` would buy two things, and this crate already has both by
+//! other means. Module size is not a constraint: the published limit
+//! is 32 MB and this module is about 47 KB. Determinism does not come
+//! from `no_std` either; it comes from the rule that the scored path
+//! calls no transcendental function. See the `score` module: every
+//! step of the curve runs with `+`, `-`, `*` and `/` only.
 
 #![deny(missing_docs)]
 
 pub mod abi;
 pub mod error;
-pub mod math;
-pub mod metrics;
-pub mod parse;
+pub mod score;
+pub mod text;
+pub mod value;
 
 pub use error::ScoreError;
 

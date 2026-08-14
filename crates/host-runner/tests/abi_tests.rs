@@ -103,9 +103,9 @@ fn golden_vectors_match_by_bit_equality() {
         for vector in &vectors {
             let got = instance
                 .rank_answer(
-                    b"",
+                    vector.question.as_bytes(),
                     vector.ground_truth.as_bytes(),
-                    vector.response.as_bytes(),
+                    vector.miner_answer.as_bytes(),
                 )
                 .unwrap_or_else(|e| {
                     panic!(
@@ -199,7 +199,7 @@ fn fresh_instance_matches_reused_instance() {
         // so this test can catch state that leaks between calls.
         for _ in 0..5 {
             instance
-                .rank_answer(b"", br#"{"label": 1}"#, br#"{"confidence": 0.9}"#)
+                .rank_answer(b"", b"34.7 C", b"34.9 C")
                 .unwrap_or_else(|e| panic!("warm-up call failed on '{label}': {e:?}"));
         }
         let report = checks::check_fresh_vs_reused(wasm_path.as_path(), &mut instance, b"", gt, ma)
@@ -310,7 +310,7 @@ fn valid_cycle_after_a_rejected_alloc_still_gives_the_right_golden_vector_score(
             .rank_answer(
                 b"",
                 vector.ground_truth.as_bytes(),
-                vector.response.as_bytes(),
+                vector.miner_answer.as_bytes(),
             )
             .unwrap_or_else(|e| {
                 panic!("call to 'rank_answer' failed on '{label}' after a rejected alloc: {e:?}")

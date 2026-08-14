@@ -8,9 +8,8 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# serde_json compiles into this module as pure Rust code.
-# It does not use host imports. This keeps the score deterministic.
-# It also has a correctly-rounded float parser. A hand-rolled parser
-# would not give that guarantee.
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# This crate has no dependency. An earlier wave parsed both inputs as
+# JSON with serde_json. Both inputs are now short texts that hold one
+# value each, so there is no JSON to parse. The number reader in the
+# `value` module builds a clean ASCII form and then calls the `f64`
+# parser in `core`, which is pure Rust and rounds correctly.

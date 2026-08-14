@@ -11,11 +11,14 @@ use serde::Deserialize;
 pub struct GoldenVector {
     /// The short name of the vector, for the printed table.
     pub name: String,
-    /// The raw JSON bytes to send as ground truth. Send them as they are.
+    /// The question text to send. It may be empty, and it may be
+    /// junk; the module must not require it.
+    #[serde(default)]
+    pub question: String,
+    /// The ground truth text to send. Send the bytes as they are.
     pub ground_truth: String,
-    /// The raw JSON bytes to send as the miner response. Send them as they
-    /// are.
-    pub response: String,
+    /// The miner answer text to send. Send the bytes as they are.
+    pub miner_answer: String,
     /// The expected score. Compare with bit equality, not `==`.
     pub expected: f64,
 }
@@ -94,272 +97,147 @@ pub struct MalformedCase {
     pub expect_worst_score: bool,
 }
 
-/// This makes a valid ground truth payload for cases that only test the
-/// response side.
-fn valid_gt() -> Vec<u8> {
-    br#"{"label": 1}"#.to_vec()
-}
-
-/// This makes a valid response payload for cases that only test the
-/// ground truth side.
-fn valid_resp() -> Vec<u8> {
-    br#"{"confidence": 0.5}"#.to_vec()
-}
-
-/// This builds the full malformed input matrix, cases 1 through 27.
+/// This builds the malformed input matrix.
 ///
-/// Every case must not trap. Every case must return exactly 0.0, the
-/// worst score. Cases 23 through 27 test the [`MAX_INPUT_BYTES`] cap.
-/// See the [`MalformedCase::expect_worst_score`] doc comment for the two
-/// paths a case can take to reach 0.0.
+/// Every case must not trap, and every case must return exactly 0.0,
+/// the worst score.
+///
+/// The matrix changed with the new scoring model. The old model parsed
+/// both sides as JSON, so a text such as `{label: 0` was a PARSE
+/// ERROR and scored 0.0. Both sides are now free text, so that same
+/// text is simply a text that holds no value, and it scores by its
+/// token overlap. It is no longer a worst-score case, so it is no
+/// longer in this matrix.
+///
+/// What remains are the cases that must still reach exactly 0.0:
+/// - a blank miner answer, in every whitespace form,
+/// - a miner answer that is not valid UTF-8,
+/// - an input over [`MAX_INPUT_BYTES`], which the cap rejects before
+///   any byte is read,
+/// - an answer that shares no token with the ground truth.
 pub fn malformed_cases() -> Vec<MalformedCase> {
     let mut cases = vec![
         MalformedCase {
             id: 1,
-            name: "empty ground_truth, valid response",
-            ground_truth: b"".to_vec(),
-            response: valid_resp(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 2,
-            name: "empty response, valid ground_truth",
-            ground_truth: valid_gt(),
+            name: "empty miner answer, valid ground truth",
+            ground_truth: b"192.43".to_vec(),
             response: b"".to_vec(),
             expect_worst_score: true,
         },
         MalformedCase {
+            id: 2,
+            name: "whitespace only miner answer",
+            ground_truth: b"192.43".to_vec(),
+            response: b"   \t\n\r ".to_vec(),
+            expect_worst_score: true,
+        },
+        MalformedCase {
             id: 3,
-            name: "both empty",
+            name: "both sides empty",
             ground_truth: b"".to_vec(),
             response: b"".to_vec(),
             expect_worst_score: true,
         },
         MalformedCase {
             id: 4,
-            name: "non-UTF-8 bytes in ground_truth",
-            ground_truth: vec![0xff, 0xfe, 0xfd],
-            response: valid_resp(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 5,
-            name: "non-UTF-8 bytes in response",
-            ground_truth: valid_gt(),
+            name: "non-UTF-8 bytes in the miner answer",
+            ground_truth: b"192.43".to_vec(),
             response: vec![0xff, 0xfe, 0xfd],
             expect_worst_score: true,
         },
         MalformedCase {
+            id: 5,
+            name: "control characters only in the miner answer",
+            ground_truth: b"192.43".to_vec(),
+            response: vec![0x00, 0x01, 0x02],
+            expect_worst_score: true,
+        },
+        MalformedCase {
             id: 6,
-            name: "invalid JSON: unquoted key, no closing brace",
-            ground_truth: b"{label: 0".to_vec(),
-            response: valid_resp(),
+            name: "a word that shares no token with the ground truth",
+            ground_truth: b"malicious".to_vec(),
+            response: b"sunny".to_vec(),
             expect_worst_score: true,
         },
         MalformedCase {
             id: 7,
-            name: "valid JSON but not an object",
-            ground_truth: b"[1,2,3]".to_vec(),
-            response: valid_resp(),
+            name: "a number against an incompatible unit",
+            ground_truth: b"307.85 K".to_vec(),
+            response: b"307.85 USD".to_vec(),
             expect_worst_score: true,
         },
         MalformedCase {
             id: 8,
-            name: "missing field: ground_truth {}",
-            ground_truth: b"{}".to_vec(),
-            response: valid_resp(),
+            name: "a negated answer against a plain ground truth",
+            ground_truth: b"malicious".to_vec(),
+            response: b"not malicious".to_vec(),
             expect_worst_score: true,
         },
         MalformedCase {
             id: 9,
-            name: "missing field: response {}",
-            ground_truth: valid_gt(),
-            response: b"{}".to_vec(),
+            name: "the NaN word is not a number",
+            ground_truth: b"192.43".to_vec(),
+            response: b"NaN".to_vec(),
             expect_worst_score: true,
         },
         MalformedCase {
             id: 10,
-            name: "wrong type: label is a string",
-            ground_truth: br#"{"label": "one"}"#.to_vec(),
-            response: valid_resp(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 11,
-            name: "wrong type: confidence is a string",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": "high"}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 12,
-            name: "wrong type: confidence is null",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": null}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 13,
-            name: "label out of range: 2",
-            ground_truth: br#"{"label": 2}"#.to_vec(),
-            response: valid_resp(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 14,
-            name: "label out of range: -1",
-            ground_truth: br#"{"label": -1}"#.to_vec(),
-            response: valid_resp(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 15,
-            name: "confidence NaN token (invalid JSON)",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": NaN}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 16,
-            name: "confidence +Infinity token (invalid JSON)",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": Infinity}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 17,
-            name: "confidence -Infinity token (invalid JSON)",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": -Infinity}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 18,
-            name: "confidence huge exponent overflows to +Inf",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": 1e400}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 19,
-            name: "confidence huge negative exponent",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": -1e400}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 20,
-            name: "confidence out of range low: -0.5",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": -0.5}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 21,
-            name: "confidence out of range high: 1.5",
-            ground_truth: valid_gt(),
-            response: br#"{"confidence": 1.5}"#.to_vec(),
-            expect_worst_score: true,
-        },
-        MalformedCase {
-            id: 22,
-            name: "deeply nested JSON, about 200 levels of '['",
-            ground_truth: valid_gt(),
-            response: "[".repeat(200).into_bytes(),
+            name: "the Infinity word is not a number",
+            ground_truth: b"192.43".to_vec(),
+            response: b"Infinity".to_vec(),
             expect_worst_score: true,
         },
     ];
 
-    // These cases build their payload with a function call. They do not
-    // fit in the `vec![]` literal above as plain field values, so they
-    // are added here instead.
+    // The cap cases. Each one is far over `MAX_INPUT_BYTES`, so the
+    // cap rejects it before the host reads any byte from memory.
+    let over_cap = (MAX_INPUT_BYTES as usize) + 1;
+
     cases.push(MalformedCase {
-        id: 23,
-        name: "huge payload, about 10 MB, valid-looking JSON, over the cap",
-        ground_truth: valid_gt(),
-        response: build_huge_valid_json(),
-        // This payload has well-formed JSON content. Before the input
-        // cap, that made this case not malformed; it got a real score.
-        // Its size is far over `MAX_INPUT_BYTES`, so the cap now
-        // rejects it before any byte is read. It returns 0.0, like
-        // every other case here.
+        id: 11,
+        name: "huge miner answer, about 10 MB, valid-looking text, over the cap",
+        ground_truth: b"192.43".to_vec(),
+        response: {
+            let mut payload = b"192.43 ".to_vec();
+            payload.resize(10 * 1024 * 1024, b'a');
+            payload
+        },
         expect_worst_score: true,
     });
+
     cases.push(MalformedCase {
-        id: 24,
-        name: "huge payload, about 10 MB, pure garbage bytes, over the cap",
-        ground_truth: valid_gt(),
-        response: build_huge_garbage(),
-        // This payload is over `MAX_INPUT_BYTES`, so the cap rejects it
-        // before any byte is read. It never reaches the JSON parser.
+        id: 12,
+        name: "huge miner answer, about 10 MB, pure garbage bytes, over the cap",
+        ground_truth: b"192.43".to_vec(),
+        response: (0..10 * 1024 * 1024).map(|i| (i % 256) as u8).collect(),
         expect_worst_score: true,
     });
+
     cases.push(MalformedCase {
-        id: 25,
-        name: "gt_len exactly at the 1 MiB cap, invalid JSON",
-        // This size sits exactly at `MAX_INPUT_BYTES`. The cap does not
-        // reject a size at the cap, only a size over it. This payload
-        // reaches the JSON parser and fails to parse there, because it
-        // is not a JSON object. It returns 0.0 through the parse-failure
-        // path, not the cap path.
-        ground_truth: vec![b'x'; MAX_INPUT_BYTES as usize],
-        response: valid_resp(),
+        id: 13,
+        name: "ground truth one byte over the cap",
+        ground_truth: vec![b'x'; over_cap],
+        response: b"192.43".to_vec(),
         expect_worst_score: true,
     });
+
     cases.push(MalformedCase {
-        id: 26,
-        name: "gt_len one byte over the 1 MiB cap",
-        // This size is one byte over `MAX_INPUT_BYTES`. The cap rejects
-        // it before any byte is read from linear memory.
-        ground_truth: vec![b'x'; MAX_INPUT_BYTES as usize + 1],
-        response: valid_resp(),
+        id: 14,
+        name: "miner answer one byte over the cap",
+        ground_truth: b"192.43".to_vec(),
+        response: vec![b'x'; over_cap],
         expect_worst_score: true,
     });
+
     cases.push(MalformedCase {
-        id: 27,
-        name: "resp_len one byte over the 1 MiB cap",
-        ground_truth: valid_gt(),
-        // This size is one byte over `MAX_INPUT_BYTES`. The cap rejects
-        // it before any byte is read from linear memory.
-        response: vec![b'x'; MAX_INPUT_BYTES as usize + 1],
+        id: 15,
+        name: "miner answer exactly at the cap, shares no token",
+        ground_truth: b"192.43".to_vec(),
+        response: vec![b'x'; MAX_INPUT_BYTES as usize],
         expect_worst_score: true,
     });
 
     cases
-}
-
-/// This builds a valid-looking JSON payload, padded to about 10 MB.
-///
-/// It has a valid `confidence` field and a `pad` field with a long string.
-/// This tests that the module handles a large but well-formed payload
-/// without excess cost, and without a stack or memory problem.
-fn build_huge_valid_json() -> Vec<u8> {
-    const TARGET_SIZE: usize = 10 * 1024 * 1024;
-    let prefix = br#"{"confidence": 0.5, "pad": ""#;
-    let suffix = br#""}"#;
-    let pad_len = TARGET_SIZE - prefix.len() - suffix.len();
-    let mut out = Vec::with_capacity(TARGET_SIZE);
-    out.extend_from_slice(prefix);
-    out.resize(out.len() + pad_len, b'a');
-    out.extend_from_slice(suffix);
-    out
-}
-
-/// This builds about 10 MB of pure garbage bytes. It is not valid UTF-8
-/// and not valid JSON.
-fn build_huge_garbage() -> Vec<u8> {
-    const TARGET_SIZE: usize = 10 * 1024 * 1024;
-    let mut out = Vec::with_capacity(TARGET_SIZE);
-    for i in 0..TARGET_SIZE {
-        // This makes a repeating, non-UTF-8-friendly pattern. It is not
-        // random. The test must stay repeatable across runs.
-        out.push((i % 256) as u8);
-    }
-    // Force some high bytes in so this can never parse as UTF-8.
-    for byte in out.iter_mut().step_by(7) {
-        *byte = 0xff;
-    }
-    out
 }
 
 /// This truncates a byte slice for a printed table cell.

@@ -1,116 +1,136 @@
-//! This test drives the pure Rust `eval_script` API with every
-//! malformed input shape the hard safety contract lists. Every case
-//! here must produce an error from the pure API, which the ABI
-//! layer in `eval_script::abi` then turns into the worst score,
-//! 0.0. Two cases about a raw pointer and length pair, which the
-//! pure `&[u8]` API cannot express, run through the real
-//! `eval_script::abi::score` export instead. Those two calls never
-//! read a real memory address, so they stay safe to run on a native
-//! target. See the `abi` module doc comment for why a native target
-//! cannot safely round-trip a real pointer through this ABI.
+//! This test drives the ABI safety contract with every malformed
+//! input shape.
+//!
+//! The contract changed with the new scoring model. The old model
+//! parsed both sides as JSON, so a malformed input was an ERROR that
+//! the ABI turned into 0.0. Both sides are now free text, so almost
+//! no text is malformed: a text that holds no value is simply a text
+//! that scores badly. The rules that remain are these:
+//!
+//! - A pointer and length pair that names memory outside the module
+//!   scores 0.0, and never reads that memory.
+//! - A length over `MAX_INPUT_BYTES` scores 0.0, and the check runs
+//!   before any bounds check and before any read.
+//! - A blank miner answer scores exactly 0.0.
+//! - A miner answer that is not UTF-8 scores 0.0.
+//! - Every input gives a finite score inside `[0.0, 1.0]`.
+//!
+//! The calls below use `rank_answer_impl`, which is the one scoring
+//! entry point. Each call passes a length of 0 or an already invalid
+//! pointer, so no call ever reads a real memory address. See the
+//! `abi` module doc comment for why a native target cannot safely
+//! round-trip a real pointer through this ABI.
 
 use eval_script::abi;
-use eval_script::metrics::brier_from_bytes;
+use eval_script::score::score_answer;
 
-const VALID_GT: &[u8] = b"{\"label\": 1}";
-const VALID_RESP: &[u8] = b"{\"confidence\": 0.5}";
-
-#[test]
-fn empty_input_is_an_error() {
-    assert!(brier_from_bytes(b"", VALID_RESP).is_err());
-    assert!(brier_from_bytes(VALID_GT, b"").is_err());
-}
-
-#[test]
-fn non_utf8_bytes_are_an_error() {
-    let bad = &[0xff, 0xfe, 0xfd];
-    assert!(brier_from_bytes(bad, VALID_RESP).is_err());
-    assert!(brier_from_bytes(VALID_GT, bad).is_err());
-}
-
-#[test]
-fn invalid_json_is_an_error() {
-    assert!(brier_from_bytes(b"{not json}", VALID_RESP).is_err());
-    assert!(brier_from_bytes(VALID_GT, b"{not json}").is_err());
-}
-
-#[test]
-fn missing_field_is_an_error() {
-    assert!(brier_from_bytes(b"{}", VALID_RESP).is_err());
-    assert!(brier_from_bytes(VALID_GT, b"{}").is_err());
-}
-
-#[test]
-fn wrong_json_type_is_an_error() {
-    assert!(brier_from_bytes(b"[1, 2]", VALID_RESP).is_err());
-    assert!(brier_from_bytes(b"{\"label\": \"1\"}", VALID_RESP).is_err());
-    assert!(brier_from_bytes(VALID_GT, b"{\"confidence\": \"high\"}").is_err());
-    assert!(brier_from_bytes(VALID_GT, b"{\"confidence\": null}").is_err());
-}
-
-#[test]
-fn label_not_in_zero_or_one_is_an_error() {
-    assert!(brier_from_bytes(b"{\"label\": 2}", VALID_RESP).is_err());
-    assert!(brier_from_bytes(b"{\"label\": -1}", VALID_RESP).is_err());
-    assert!(brier_from_bytes(b"{\"label\": 0.5}", VALID_RESP).is_err());
-}
-
-#[test]
-fn confidence_infinity_is_an_error() {
-    // A JSON text cannot spell NaN or Infinity directly, but a
-    // decimal exponent far past the f64 range parses to an infinite
-    // float, or to a parse error. Either result must be an error
-    // here.
-    assert!(brier_from_bytes(VALID_GT, b"{\"confidence\": 1e400}").is_err());
-    assert!(brier_from_bytes(VALID_GT, b"{\"confidence\": -1e400}").is_err());
-}
-
-#[test]
-fn confidence_out_of_range_is_an_error() {
-    assert!(brier_from_bytes(VALID_GT, b"{\"confidence\": -0.0001}").is_err());
-    assert!(brier_from_bytes(VALID_GT, b"{\"confidence\": 1.0001}").is_err());
-    assert!(brier_from_bytes(VALID_GT, b"{\"confidence\": 100}").is_err());
+/// This helper calls the scoring export with a question of length 0.
+fn rank(gt_ptr: u32, gt_len: u32, ma_ptr: u32, ma_len: u32) -> f32 {
+    abi::rank_answer_impl(0, 0, gt_ptr, gt_len, ma_ptr, ma_len)
 }
 
 #[test]
 fn a_pointer_and_length_pair_outside_memory_scores_the_worst_score() {
-    // ptr + len overflows a u32. `abi::score` catches this before it
-    // reads any memory and returns the worst score, 0.0.
-    assert_eq!(abi::score(u32::MAX, u32::MAX, 0, 0), 0.0);
-    assert_eq!(abi::score(0, 0, u32::MAX, u32::MAX), 0.0);
+    // ptr + len overflows a u32. The ABI catches this before it reads
+    // any memory and returns the worst score, 0.0.
+    assert_eq!(rank(u32::MAX, u32::MAX, 0, 0), 0.0);
+    assert_eq!(rank(0, 0, u32::MAX, u32::MAX), 0.0);
 }
 
 #[test]
 fn an_integer_overflow_in_ptr_plus_len_scores_the_worst_score() {
-    assert_eq!(abi::score(u32::MAX - 5, 10, 0, 0), 0.0);
-    assert_eq!(abi::score_log_loss(u32::MAX - 5, 10, 0, 0), 0.0);
-    assert_eq!(abi::score_batch(u32::MAX - 5, 10), 0.0);
+    assert_eq!(rank(u32::MAX - 5, 10, 0, 0), 0.0);
+    assert_eq!(rank(0, 0, u32::MAX - 5, 10), 0.0);
 }
 
 #[test]
 fn a_null_pointer_with_a_nonzero_length_scores_the_worst_score() {
-    // ptr is 0 (null) but len is nonzero, so the offset does not
-    // name a real block. `abi::score` returns the worst score
-    // before it ever dereferences the pointer.
-    assert_eq!(abi::score(0, 8, 0, 0), 0.0);
-    assert_eq!(abi::score(0, 0, 0, 8), 0.0);
-}
-
-#[test]
-fn empty_input_bytes_score_the_worst_score() {
-    // Zero length input is valid UTF-8 (the empty string), but it
-    // is not valid JSON. `abi::score_batch` never dereferences `ptr`
-    // here, because `len` is 0.
-    assert_eq!(abi::score_batch(0, 0), 0.0);
+    // ptr is 0 (null) but len is nonzero, so the offset does not name
+    // a real block. The ABI returns the worst score before it ever
+    // dereferences the pointer.
+    assert_eq!(rank(0, 8, 0, 0), 0.0);
+    assert_eq!(rank(0, 0, 0, 8), 0.0);
 }
 
 #[test]
 fn an_oversize_length_scores_the_worst_score_without_a_trap() {
-    // gt_len is one byte over `MAX_INPUT_BYTES`. gt_ptr is a wild
-    // address that is never a valid block. `abi::score` checks the
+    // The length is one byte over `MAX_INPUT_BYTES`. The pointer is a
+    // wild address that is never a valid block. The ABI checks the
     // length cap before it checks bounds or reads memory, so this
     // never touches the wild pointer.
     let over_cap = eval_script::MAX_INPUT_BYTES + 1;
-    assert_eq!(abi::score(0xdead_beef, over_cap, 0, 0), 0.0);
-    assert_eq!(abi::score_batch(0xdead_beef, over_cap), 0.0);
+    assert_eq!(rank(0xdead_beef, over_cap, 0, 0), 0.0);
+    assert_eq!(rank(0, 0, 0xdead_beef, over_cap), 0.0);
+}
+
+#[test]
+fn a_zero_length_pair_scores_the_worst_score() {
+    // Both sides are empty. The miner answer is blank, so the score
+    // is exactly 0.0.
+    assert_eq!(rank(0, 0, 0, 0), 0.0);
+}
+
+#[test]
+fn a_junk_question_pointer_does_not_change_the_score() {
+    // The question is advisory. A wild question pointer and an
+    // oversize question length must both fall back to an empty
+    // question, not to a failed score.
+    let over_cap = eval_script::MAX_INPUT_BYTES + 1;
+    let with_wild_question = abi::rank_answer_impl(0xdead_beef, over_cap, 0, 0, 0, 0);
+    let with_no_question = abi::rank_answer_impl(0, 0, 0, 0, 0, 0);
+    assert_eq!(with_wild_question, with_no_question);
+}
+
+// ---------------------------------------------------------------
+// The text level contract, through the pure scoring function
+// ---------------------------------------------------------------
+
+#[test]
+fn every_malformed_text_gives_a_score_inside_the_range() {
+    // None of these is an error any more. Each one must give a
+    // finite score inside the closed range.
+    let cases: [(&str, &str); 14] = [
+        ("", ""),
+        ("", "192.43"),
+        ("192.43", ""),
+        ("{not json}", "{not json}"),
+        ("[1, 2]", "{\"label\": \"1\"}"),
+        ("null", "null"),
+        ("N/A", "N/A"),
+        ("\u{0}\u{1}", "\u{0}\u{1}"),
+        ("1e400", "1e400"),
+        ("-1e400", "192.43"),
+        ("192.43", "NaN"),
+        ("192.43", "Infinity"),
+        ("192.43", "-Infinity"),
+        ("0", "0"),
+    ];
+    for (ground_truth, answer) in cases {
+        let value = score_answer("", ground_truth, answer);
+        assert!(
+            value.is_finite() && (0.0..=1.0).contains(&value),
+            "({ground_truth:?}, {answer:?}) gave {value}, which is outside [0, 1]"
+        );
+    }
+}
+
+#[test]
+fn the_infinity_and_nan_words_are_not_numbers() {
+    // A text that names a non-finite value must never reach the
+    // numeric path. It is an ordinary word with no overlap.
+    assert_eq!(score_answer("", "192.43", "NaN"), 0.0);
+    assert_eq!(score_answer("", "192.43", "Infinity"), 0.0);
+    assert_eq!(score_answer("", "192.43", "-Infinity"), 0.0);
+}
+
+#[test]
+fn a_blank_answer_scores_exactly_zero_for_every_ground_truth() {
+    for ground_truth in ["", "192.43", "malicious", "34.7 C", "N/A"] {
+        assert_eq!(
+            score_answer("", ground_truth, ""),
+            0.0,
+            "a blank answer against {ground_truth:?} did not score exactly 0.0"
+        );
+        assert_eq!(score_answer("", ground_truth, "  \t\n "), 0.0);
+    }
 }

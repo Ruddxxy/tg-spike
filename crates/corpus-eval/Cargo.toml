@@ -1,0 +1,18 @@
+[package]
+name = "corpus-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The scoring crate under test. This tool calls it natively, for the
+# tables that do not need a wasm host. The wazero runner scores the
+# same rows through the real wasm boundary, and the two must agree.
+eval-script = { path = "../eval-script" }
+# The corpus builder gives the response normaliser. The corpus stores
+# the full upstream response per row; the protocol gives `rank_answer`
+# a single extracted value. This tool must do that extraction with the
+# SAME code the corpus was built with, never a second copy.
+corpus-builder = { path = "../corpus-builder" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

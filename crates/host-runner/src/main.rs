@@ -212,7 +212,10 @@ fn run_golden_vectors(instance: &mut ScriptInstance) -> Result<GoldenVectorsOutc
         );
     }
 
-    println!("question: empty for every vector, ptr=0 len=0, matching wazero-runner.");
+    println!(
+        "question: taken from each vector, the same bytes the wazero runner sends.\n\
+         One vector carries a junk question on purpose."
+    );
     println!(
         "{:<28} {:>12} {:>12} {:>12} {:>6}",
         "name", "expected", "got", "got bits", "match"
@@ -221,10 +224,11 @@ fn run_golden_vectors(instance: &mut ScriptInstance) -> Result<GoldenVectorsOutc
     let mut first_bytes: Option<(Vec<u8>, Vec<u8>)> = None;
     let mut results = Vec::with_capacity(vectors.len());
     for vector in &vectors {
+        let question_bytes = vector.question.as_bytes();
         let gt_bytes = vector.ground_truth.as_bytes();
-        let ma_bytes = vector.response.as_bytes();
+        let ma_bytes = vector.miner_answer.as_bytes();
         let got = instance
-            .rank_answer(b"", gt_bytes, ma_bytes)
+            .rank_answer(question_bytes, gt_bytes, ma_bytes)
             .with_context(|| {
                 format!(
                     "call to 'rank_answer' failed for golden vector '{}'",

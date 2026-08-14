@@ -1,155 +1,228 @@
-//! This test drives the pure Rust `eval_script::metrics` API against
-//! the golden vectors for the Track 2 evaluation script.
+//! This test pins the golden vectors for the scoring module.
 //!
-//! The workspace root holds `golden_vectors.json`. This crate must
-//! not touch that file, because a different agent owns it. This
-//! test hardcodes the same vectors here instead, as the crate spec
-//! allows. Each `expected` value is a dyadic rational, so an `f64`
-//! holds it exactly, and this test compares the exact bit pattern
-//! with `assert_eq!`, not a tolerance.
+//! Each vector names a question, a ground truth, a miner answer, and
+//! the exact `f32` bit pattern the module must return. The host
+//! runner reads the same vectors and checks them through wasmtime and
+//! through wazero, so a change here is visible on every host.
 //!
-//! A high score is good, so `expected` here holds the score, not the
-//! raw Brier loss. Each value equals `1.0 - old_brier_loss`. See
-//! `golden_vectors.json` at the workspace root for the same numbers
-//! with the same names.
+//! The old vectors came from the Brier model, which scored a JSON
+//! label against a JSON confidence. That model is gone. Every vector
+//! below comes from the new scorer.
+//!
+//! The bit pattern is the unit of comparison, not the decimal text. A
+//! validator whose score differs by one bit from the network median
+//! is at risk of a slash, so the test compares bits.
 
+use eval_script::score::score_answer;
+
+/// One golden vector.
 struct Vector {
+    /// The name that the report and the host runner use.
     name: &'static str,
+    /// The question text. It may be junk, and it may be empty.
+    question: &'static str,
+    /// The ground truth text.
     ground_truth: &'static str,
-    response: &'static str,
-    expected: f64,
+    /// The miner answer text.
+    miner_answer: &'static str,
+    /// The exact `f32` bit pattern the module must return.
+    bits: u32,
 }
 
-const VECTORS: &[Vector] = &[
+/// The golden vectors.
+///
+/// These values match `golden_vectors.json` at the workspace root.
+/// The file and this table must stay in step; the test at the end of
+/// this file checks that they do.
+const VECTORS: [Vector; 16] = [
     Vector {
-        name: "perfect_negative",
-        ground_truth: "{\"label\": 0}",
-        response: "{\"confidence\": 0.0}",
-        expected: 1.0,
+        name: "numeric_exact",
+        question: "",
+        ground_truth: "192.43",
+        miner_answer: "192.43",
+        bits: 0x3f80_0000,
     },
     Vector {
-        name: "perfect_positive",
-        ground_truth: "{\"label\": 1}",
-        response: "{\"confidence\": 1.0}",
-        expected: 1.0,
+        name: "numeric_one_cent_out",
+        question: "",
+        ground_truth: "192.43",
+        miner_answer: "192.44",
+        bits: 0x3f7f_ffce,
     },
     Vector {
-        name: "worst_negative",
-        ground_truth: "{\"label\": 0}",
-        response: "{\"confidence\": 1.0}",
-        expected: 0.0,
+        name: "numeric_trailing_zero",
+        question: "",
+        ground_truth: "192.43",
+        miner_answer: "192.430",
+        bits: 0x3f80_0000,
     },
     Vector {
-        name: "worst_positive",
-        ground_truth: "{\"label\": 1}",
-        response: "{\"confidence\": 0.0}",
-        expected: 0.0,
+        name: "numeric_wild_answer",
+        question: "",
+        ground_truth: "192.43",
+        miner_answer: "999999.99",
+        bits: 0x2e12_a09c,
     },
     Vector {
-        name: "no_information_negative",
-        ground_truth: "{\"label\": 0}",
-        response: "{\"confidence\": 0.5}",
-        expected: 0.75,
+        name: "numeric_one_percent_out",
+        question: "",
+        ground_truth: "100",
+        miner_answer: "101",
+        bits: 0x3f66_6666,
     },
     Vector {
-        name: "no_information_positive",
-        ground_truth: "{\"label\": 1}",
-        response: "{\"confidence\": 0.5}",
-        expected: 0.75,
+        name: "numeric_fifty_percent_out",
+        question: "",
+        ground_truth: "100",
+        miner_answer: "150",
+        bits: 0x3b6b_1553,
     },
     Vector {
-        name: "good_positive_quarter",
-        ground_truth: "{\"label\": 1}",
-        response: "{\"confidence\": 0.75}",
-        expected: 0.9375,
+        name: "currency_symbol_match",
+        question: "",
+        ground_truth: "192.43",
+        miner_answer: "$192.43",
+        bits: 0x3f80_0000,
     },
     Vector {
-        name: "good_negative_quarter",
-        ground_truth: "{\"label\": 0}",
-        response: "{\"confidence\": 0.25}",
-        expected: 0.9375,
+        name: "currency_code_match",
+        question: "",
+        ground_truth: "192.43",
+        miner_answer: "192.43 USD",
+        bits: 0x3f80_0000,
     },
     Vector {
-        name: "bad_positive_eighth",
-        ground_truth: "{\"label\": 1}",
-        response: "{\"confidence\": 0.125}",
-        expected: 0.234375,
+        name: "unit_kelvin_to_celsius",
+        question: "",
+        ground_truth: "34.7 C",
+        miner_answer: "307.85 K",
+        bits: 0x3f80_0000,
     },
     Vector {
-        name: "bad_negative_eighth",
-        ground_truth: "{\"label\": 0}",
-        response: "{\"confidence\": 0.875}",
-        expected: 0.234375,
+        name: "unit_incompatible",
+        question: "",
+        ground_truth: "307.85 K",
+        miner_answer: "307.85 USD",
+        bits: 0x0000_0000,
     },
     Vector {
-        name: "integer_confidence_zero",
-        ground_truth: "{\"label\": 1}",
-        response: "{\"confidence\": 0}",
-        expected: 0.0,
+        name: "text_exact",
+        question: "",
+        ground_truth: "malicious",
+        miner_answer: "malicious",
+        bits: 0x3f80_0000,
     },
     Vector {
-        name: "integer_confidence_one",
-        ground_truth: "{\"label\": 0}",
-        response: "{\"confidence\": 1}",
-        expected: 0.0,
+        name: "text_unrelated",
+        question: "",
+        ground_truth: "malicious",
+        miner_answer: "sunny",
+        bits: 0x0000_0000,
     },
     Vector {
-        name: "extra_fields_are_ignored",
-        ground_truth: "{\"label\": 1, \"source\": \"oracle\"}",
-        response: "{\"confidence\": 0.75, \"model\": \"m1\"}",
-        expected: 0.9375,
+        name: "text_negated",
+        question: "",
+        ground_truth: "malicious",
+        miner_answer: "not malicious",
+        bits: 0x0000_0000,
     },
     Vector {
-        name: "whitespace_is_ignored",
-        ground_truth: "  {  \"label\" : 0 }  ",
-        response: "\n{\n  \"confidence\"\t: 0.25\n}\n",
-        expected: 0.9375,
+        name: "text_is_attack",
+        question: "",
+        ground_truth: "is malicious",
+        miner_answer: "is",
+        bits: 0x3f00_0000,
+    },
+    Vector {
+        name: "blank_answer",
+        question: "",
+        ground_truth: "192.43",
+        miner_answer: "",
+        bits: 0x0000_0000,
+    },
+    Vector {
+        name: "question_is_junk",
+        question: "[direct] 207 -> /price",
+        ground_truth: "192.43",
+        miner_answer: "192.43",
+        bits: 0x3f80_0000,
     },
 ];
 
 #[test]
-fn every_golden_vector_matches_the_exact_expected_bits() {
-    for vector in VECTORS {
-        let actual = eval_script::metrics::brier_from_bytes(
-            vector.ground_truth.as_bytes(),
-            vector.response.as_bytes(),
-        )
-        .unwrap_or_else(|err| panic!("vector \"{}\" failed to parse: {err}", vector.name));
+fn every_golden_vector_matches_its_bit_pattern() {
+    for vector in VECTORS.iter() {
+        let value = score_answer(vector.question, vector.ground_truth, vector.miner_answer) as f32;
         assert_eq!(
-            actual.to_bits(),
-            vector.expected.to_bits(),
-            "vector \"{}\" gave {actual}, want {}",
+            value.to_bits(),
+            vector.bits,
+            "vector {}: got {} (0x{:08x}), want 0x{:08x}",
             vector.name,
-            vector.expected
+            value,
+            value.to_bits(),
+            vector.bits
         );
     }
 }
 
 #[test]
-fn every_golden_vector_matches_through_the_batch_path() {
-    // Run every golden vector through `score_batch` as one array, in
-    // its declared order, and check the mean by hand with the
-    // hardcoded expected values. This exercises the batch path
-    // against the same trusted numbers as the single-pair path.
-    let mut body = String::from("[");
-    for (index, vector) in VECTORS.iter().enumerate() {
-        if index > 0 {
-            body.push(',');
-        }
-        body.push_str(&format!(
-            "{{\"ground_truth\": {}, \"response\": {}}}",
-            vector.ground_truth, vector.response
-        ));
+fn every_golden_vector_sits_inside_the_closed_range() {
+    for vector in VECTORS.iter() {
+        let value = score_answer(vector.question, vector.ground_truth, vector.miner_answer) as f32;
+        assert!(
+            value.is_finite() && (0.0..=1.0).contains(&value),
+            "vector {} gave {value}, which is outside [0, 1]",
+            vector.name
+        );
     }
-    body.push(']');
+}
 
-    let expected_mean: f64 =
-        VECTORS.iter().map(|vector| vector.expected).sum::<f64>() / VECTORS.len() as f64;
+#[test]
+fn the_vector_names_are_unique() {
+    // A repeated name would make a host runner report ambiguous.
+    for (index, vector) in VECTORS.iter().enumerate() {
+        for other in VECTORS.iter().skip(index + 1) {
+            assert_ne!(
+                vector.name, other.name,
+                "the name {} appears twice",
+                vector.name
+            );
+        }
+    }
+}
 
-    let actual = eval_script::metrics::batch_brier_from_bytes(body.as_bytes())
-        .expect("the combined golden vector batch must parse");
-    assert!(
-        (actual - expected_mean).abs() < 1e-12,
-        "batch mean {actual} did not match hand computed mean {expected_mean}"
-    );
+#[test]
+fn the_json_file_matches_this_table() {
+    // The host runner and the wazero runner both read the JSON file.
+    // A drift between the file and this table would let the two hosts
+    // check different things.
+    let text = include_str!("golden_vectors.json");
+    for vector in VECTORS.iter() {
+        let name_key = alloc_name_key(vector.name);
+        assert!(
+            text.contains(&name_key),
+            "the JSON file has no vector named {}",
+            vector.name
+        );
+        let bits_text = alloc_bits_text(vector.bits);
+        assert!(
+            text.contains(&bits_text),
+            "the JSON file has no bit pattern {} for vector {}",
+            bits_text,
+            vector.name
+        );
+    }
+}
+
+/// This function builds the JSON key text for a vector name.
+fn alloc_name_key(name: &str) -> String {
+    let mut key = String::from("\"name\": \"");
+    key.push_str(name);
+    key.push('"');
+    key
+}
+
+/// This function builds the JSON bit pattern text for a vector.
+fn alloc_bits_text(bits: u32) -> String {
+    format!("\"0x{bits:08x}\"")
 }

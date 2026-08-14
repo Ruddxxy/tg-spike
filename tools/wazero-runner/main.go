@@ -38,18 +38,39 @@ func main() {
 	minerAnswer := flag.String("ma", "", "miner answer text (compare mode)")
 	matrixMode := flag.Bool("matrix", false, "run the built in differential matrix")
 	goldenPath := flag.String("golden", "", "path to a golden vector JSON file, turns on golden mode")
-	outPath := flag.String("out", "", "output path for golden mode JSON result")
+	outPath := flag.String("out", "", "output path for golden mode or corpus mode result")
+	corpusPath := flag.String("corpus", "", "path to prepared corpus rows, turns on corpus mode")
 	flag.Parse()
 
 	ctx := context.Background()
 
 	switch {
+	case *corpusPath != "":
+		runCorpusMode(ctx, *pathA, *pathB, *corpusPath, *outPath)
 	case *goldenPath != "":
 		runGoldenMode(ctx, *goldenPath, *pathA, *outPath)
 	case *matrixMode:
 		runMatrixMode(ctx, *pathA, *pathB)
 	default:
 		runCompareMode(ctx, *pathA, *pathB, *question, *groundTruth, *minerAnswer)
+	}
+}
+
+// runCorpusMode checks corpus mode flags, then scores the corpus with
+// both modules. It exits with status 1 and a clean message on any flag
+// or run error.
+func runCorpusMode(ctx context.Context, oursPath, refPath, corpusPath, outPath string) {
+	if oursPath == "" {
+		fail("corpus mode needs -a <path to our wasm module>")
+	}
+	if refPath == "" {
+		fail("corpus mode needs -b <path to the reference wasm module>")
+	}
+	if outPath == "" {
+		fail("corpus mode needs -out <path to write jsonl>")
+	}
+	if err := scoreCorpus(ctx, oursPath, refPath, corpusPath, outPath); err != nil {
+		fail(err.Error())
 	}
 }
 

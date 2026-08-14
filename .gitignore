@@ -1,2 +1,5 @@
 target/
 corpus/
+tools/wazero-runner/wazero-runner
+reference/
+__pycache__/

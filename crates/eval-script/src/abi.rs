@@ -47,9 +47,8 @@
 //! raw pointer at all.
 
 use crate::error::ScoreError;
-use crate::metrics;
 use crate::MAX_INPUT_BYTES;
-use std::alloc::{alloc as std_alloc, dealloc as std_dealloc, Layout};
+use std::alloc::{alloc as raw_alloc, dealloc as raw_dealloc, Layout};
 
 /// This function allocates a block of memory inside the module.
 ///
@@ -97,7 +96,7 @@ pub fn alloc_impl(len: u32) -> u32 {
     // SECURITY: `block_layout` never returns a layout with size 0,
     // so this call meets the `GlobalAlloc::alloc` contract, which
     // forbids a zero-size layout.
-    let ptr = unsafe { std_alloc(layout) };
+    let ptr = unsafe { raw_alloc(layout) };
     if ptr.is_null() {
         return 0;
     }
@@ -132,7 +131,7 @@ pub fn dealloc_impl(ptr: u32, len: u32) {
     // block. A host that breaks that rule can corrupt the
     // allocator. That risk is inherent to a manual alloc and free
     // ABI.
-    unsafe { std_dealloc(ptr as *mut u8, layout) };
+    unsafe { raw_dealloc(ptr as *mut u8, layout) };
 }
 
 /// This function is the wasm32 export for `alloc_impl`.
@@ -256,26 +255,22 @@ fn read_bytes(ptr: u32, len: u32) -> Result<&'static [u8], ScoreError> {
     Ok(slice)
 }
 
-/// This function runs a two-input score function over two raw
-/// memory blocks and turns any error into the worst score, 0.0.
+/// This function reads the question bytes, and never fails.
 ///
-/// `score`, `score_log_loss`, and `rank_answer_impl` all route
-/// through this function. Each caller gives its own `scorer`
-/// function, so this function stays the one place that reads two
-/// raw blocks and turns a `Result` into the final worst-case-safe
-/// `f64`.
-fn run_pair_score(
-    gt_ptr: u32,
-    gt_len: u32,
-    resp_ptr: u32,
-    resp_len: u32,
-    scorer: fn(&[u8], &[u8]) -> Result<f64, ScoreError>,
-) -> f64 {
-    let outcome = read_bytes(gt_ptr, gt_len).and_then(|gt_bytes| {
-        let resp_bytes = read_bytes(resp_ptr, resp_len)?;
-        scorer(gt_bytes, resp_bytes)
-    });
-    finish(outcome)
+/// The question argument is advisory. Real traffic carries a question
+/// such as "[direct] 207 -> /price", which holds no useful text, and a
+/// caller may give a junk pointer, an oversize length, or bytes that
+/// are not UTF-8. None of that may change the score of a good answer.
+///
+/// So this function gives an empty text for every failure. It never
+/// returns an error, and the score path never requires the question to
+/// hold anything. The scorer uses the question only to reject an
+/// answer that copies the question back.
+fn read_question_text<'a>(ptr: u32, len: u32) -> &'a str {
+    match read_bytes(ptr, len) {
+        Ok(bytes) => core::str::from_utf8(bytes).unwrap_or(""),
+        Err(_) => "",
+    }
 }
 
 /// This function turns a score result into a safe `f64` output.
@@ -304,73 +299,6 @@ pub fn finish(outcome: Result<f64, ScoreError>) -> f64 {
     }
 }
 
-/// This function calculates the Brier score for one ground truth
-/// and response pair.
-///
-/// A high score is good. A low score is bad. The range is 0.0 to
-/// 1.0. The function reads the ground truth JSON bytes from
-/// `gt_ptr` and `gt_len`, and the response JSON bytes from
-/// `resp_ptr` and `resp_len`. The function returns 0.0 if any input
-/// is not correct, or if any input is bigger than `MAX_INPUT_BYTES`.
-///
-/// This function is no longer part of the WASM export surface. The
-/// published ABI now exports `rank_answer` in its place, which runs
-/// this same Brier computation on its ground truth and miner answer
-/// arguments. This function stays a plain `pub fn` so the existing
-/// test suite and a native, host-side caller can still reach the
-/// Brier metric directly, by its own pointer pair, without going
-/// through `rank_answer`.
-pub fn score(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_len: u32) -> f64 {
-    run_pair_score(
-        gt_ptr,
-        gt_len,
-        resp_ptr,
-        resp_len,
-        metrics::brier_from_bytes,
-    )
-}
-
-/// This function calculates the log loss score for one ground truth
-/// and response pair.
-///
-/// A high score is good. A low score is bad. The range is 0.0 to
-/// 1.0. See the `metrics` module for the normalization this function
-/// runs on the raw log loss value. The function returns 0.0 if any
-/// input is not correct, or if any input is bigger than
-/// `MAX_INPUT_BYTES`.
-///
-/// This function is no longer part of the WASM export surface. See
-/// `score` above for the reason this function stays a plain
-/// `pub fn`: the existing test suite and a native, host-side caller
-/// still use it directly.
-pub fn score_log_loss(gt_ptr: u32, gt_len: u32, resp_ptr: u32, resp_len: u32) -> f64 {
-    run_pair_score(
-        gt_ptr,
-        gt_len,
-        resp_ptr,
-        resp_len,
-        metrics::log_loss_from_bytes,
-    )
-}
-
-/// This function calculates the mean Brier score for a batch of
-/// pairs.
-///
-/// The parameter `ptr` and `len` name a block that holds a JSON
-/// array. See the `metrics` module for the array shape and for the
-/// sort-then-Kahan-sum method this function uses to stay order
-/// independent. The function returns 0.0 if the input is not
-/// correct, or if the input is bigger than `MAX_INPUT_BYTES`.
-///
-/// This function is no longer part of the WASM export surface. See
-/// `score` above for the reason this function stays a plain
-/// `pub fn`: the existing test suite and a native, host-side caller
-/// still use it directly.
-pub fn score_batch(ptr: u32, len: u32) -> f64 {
-    let outcome = read_bytes(ptr, len).and_then(metrics::batch_brier_from_bytes);
-    finish(outcome)
-}
-
 /// This function scores a miner answer against a ground truth, on
 /// two already-read byte slices.
 ///
@@ -390,15 +318,24 @@ pub fn score_batch(ptr: u32, len: u32) -> f64 {
 /// gives bytes that are not valid UTF-8, because the unchecked
 /// function trusts its caller instead of checking the bytes.
 ///
-/// Past the blank check, this function runs the same computation
-/// the old `score` export ran: `metrics::brier_from_bytes` on the
-/// ground truth bytes and the miner answer bytes.
-fn rank_answer_scorer(gt_bytes: &[u8], ma_bytes: &[u8]) -> Result<f64, ScoreError> {
+/// Past the blank check, this function calls `score::score_answer`
+/// with the question text, the ground truth text and the answer text.
+///
+/// A ground truth that is not valid UTF-8 gives an empty ground truth
+/// text, not an error. An answer can still score 0.0 against it
+/// through the normal text path. Only a bad ANSWER is an error,
+/// because the answer is the thing under judgement.
+fn rank_answer_scorer_with_question(
+    question: &str,
+    gt_bytes: &[u8],
+    ma_bytes: &[u8],
+) -> Result<f64, ScoreError> {
     let ma_text = core::str::from_utf8(ma_bytes).map_err(|_| ScoreError::InvalidUtf8)?;
     if ma_text.trim().is_empty() {
         return Ok(0.0);
     }
-    metrics::brier_from_bytes(gt_bytes, ma_bytes)
+    let gt_text = core::str::from_utf8(gt_bytes).unwrap_or("");
+    Ok(crate::score::score_answer(question, gt_text, ma_text))
 }
 
 /// This function implements the `rank_answer` ABI export.
@@ -444,9 +381,16 @@ pub fn rank_answer_impl(
     ma_ptr: u32,
     ma_len: u32,
 ) -> f32 {
-    let _wave_2_question = (question_ptr, question_len);
+    // The question is advisory. `read_question_text` gives an empty
+    // text for a junk pointer, an oversize length, or bytes that are
+    // not UTF-8, so a bad question can never lower a good answer.
+    let question = read_question_text(question_ptr, question_len);
 
-    let score = run_pair_score(gt_ptr, gt_len, ma_ptr, ma_len, rank_answer_scorer);
+    let outcome = read_bytes(gt_ptr, gt_len).and_then(|gt_bytes| {
+        let ma_bytes = read_bytes(ma_ptr, ma_len)?;
+        rank_answer_scorer_with_question(question, gt_bytes, ma_bytes)
+    });
+    let score = finish(outcome);
 
     // SINGLE NARROWING POINT. This is the only place in this crate
     // that narrows an `f64` down to an `f32`. `finish`, inside
@@ -600,56 +544,61 @@ mod tests {
     }
 
     #[test]
-    fn score_returns_worst_score_on_pointer_overflow() {
+    fn rank_answer_returns_worst_score_on_pointer_overflow() {
         // gt_ptr + gt_len overflows u32. This never reaches a real
         // memory read.
-        assert_eq!(score(u32::MAX, u32::MAX, 0, 0), 0.0);
+        assert_eq!(rank_answer_impl(0, 0, u32::MAX, u32::MAX, 0, 0), 0.0);
+        assert_eq!(rank_answer_impl(0, 0, 0, 0, u32::MAX, u32::MAX), 0.0);
     }
 
     #[test]
-    fn score_returns_worst_score_on_null_pointer_with_length() {
-        assert_eq!(score(0, 5, 0, 0), 0.0);
+    fn rank_answer_returns_worst_score_on_null_pointer_with_length() {
+        assert_eq!(rank_answer_impl(0, 0, 0, 5, 0, 0), 0.0);
+        assert_eq!(rank_answer_impl(0, 0, 0, 0, 0, 5), 0.0);
     }
 
     #[test]
-    fn score_returns_worst_score_on_empty_input() {
+    fn rank_answer_returns_worst_score_on_empty_input() {
         // Both sides are zero length. `read_bytes` returns an empty
-        // slice without dereferencing anything. Parsing an empty
-        // JSON document then fails.
-        assert_eq!(score(0, 0, 0, 0), 0.0);
-        assert_eq!(score_log_loss(0, 0, 0, 0), 0.0);
-        assert_eq!(score_batch(0, 0), 0.0);
+        // slice without dereferencing anything. A blank miner answer
+        // then scores exactly 0.0.
+        assert_eq!(rank_answer_impl(0, 0, 0, 0, 0, 0), 0.0);
     }
 
     #[test]
-    fn score_returns_worst_score_on_an_oversize_length_without_a_trap() {
-        // gt_len is one byte over the cap. gt_ptr is a wild address
-        // that is never a valid block. If the cap check did not run
-        // before the bounds check and the memory read, this call
-        // would need to touch that wild pointer. The cap check
+    fn rank_answer_returns_worst_score_on_an_oversize_length_without_a_trap() {
+        // The length is one byte over the cap. The pointer is a wild
+        // address that is never a valid block. If the cap check did
+        // not run before the bounds check and the memory read, this
+        // call would need to touch that wild pointer. The cap check
         // catches it first, so this call stays safe to run on a
         // native target and returns the worst score instead of
         // trapping.
-        assert_eq!(score(0xdead_beef, MAX_INPUT_BYTES + 1, 0, 0), 0.0);
-        assert_eq!(score_batch(0xdead_beef, MAX_INPUT_BYTES + 1), 0.0);
+        assert_eq!(
+            rank_answer_impl(0, 0, 0xdead_beef, MAX_INPUT_BYTES + 1, 0, 0),
+            0.0
+        );
+        assert_eq!(
+            rank_answer_impl(0, 0, 0, 0, 0xdead_beef, MAX_INPUT_BYTES + 1),
+            0.0
+        );
     }
 
     #[test]
     fn alloc_rejection_flows_end_to_end_to_the_worst_score() {
         // This test proves the full failure path: an oversize `len`
-        // makes `alloc_impl` return the null pointer 0, and that
-        // same null pointer with the same nonzero `len`, when passed
-        // on to a score function, must produce the worst score, 0.0,
+        // makes `alloc_impl` return the null pointer 0, and that same
+        // null pointer with the same nonzero `len`, when passed on to
+        // the score export, must produce the worst score, 0.0,
         // through `read_bytes` and then `finish`. This is the exact
-        // sequence a host follows: call `alloc`, then call a score
-        // function with the pointer `alloc` gave back.
+        // sequence a host follows: call `alloc`, then call
+        // `rank_answer` with the pointer `alloc` gave back.
         let len = MAX_INPUT_BYTES + 1;
         let ptr = alloc_impl(len);
         assert_eq!(ptr, 0);
         assert_eq!(read_bytes(ptr, len), Err(ScoreError::InputTooLarge));
-        assert_eq!(score(ptr, len, 0, 0), 0.0);
-        assert_eq!(score_log_loss(ptr, len, 0, 0), 0.0);
-        assert_eq!(score_batch(ptr, len), 0.0);
+        assert_eq!(rank_answer_impl(0, 0, ptr, len, 0, 0), 0.0);
+        assert_eq!(rank_answer_impl(0, 0, 0, 0, ptr, len), 0.0);
     }
 
     #[test]
@@ -657,15 +606,20 @@ mod tests {
         // This test covers the case where `len` sits inside the cap,
         // so `check_len_cap` passes and `read_bytes` must instead
         // catch the null pointer through `check_bounds` and the
-        // explicit null check. This is the path `read_bytes_rejects_
-        // null_pointer_with_nonzero_length` already proves for
-        // `read_bytes` alone. This test proves the same failure
-        // reaches `finish` and comes out as 0.0 from all three score
-        // functions, not only `score`.
+        // explicit null check.
         assert_eq!(read_bytes(0, 5), Err(ScoreError::BadPointer));
-        assert_eq!(score(0, 5, 0, 0), 0.0);
-        assert_eq!(score_log_loss(0, 5, 0, 0), 0.0);
-        assert_eq!(score_batch(0, 5), 0.0);
+        assert_eq!(rank_answer_impl(0, 0, 0, 5, 0, 0), 0.0);
+        assert_eq!(rank_answer_impl(0, 0, 0, 0, 0, 5), 0.0);
+    }
+
+    #[test]
+    fn a_junk_question_never_lowers_a_good_score() {
+        // The question is advisory. A wild question pointer and an
+        // oversize question length must both fall back to an empty
+        // question.
+        let good = rank_answer_impl(0, 0, 0, 0, 0, 0);
+        let with_wild = rank_answer_impl(0xdead_beef, MAX_INPUT_BYTES + 1, 0, 0, 0, 0);
+        assert_eq!(good, with_wild);
     }
 
     #[test]
@@ -711,50 +665,59 @@ mod tests {
     }
 
     #[test]
-    fn rank_answer_scorer_scores_whitespace_only_text_as_exactly_zero() {
+    fn the_scorer_scores_whitespace_only_text_as_exactly_zero() {
         // A whitespace-only miner answer needs real byte content
         // (a space, a tab, a newline). This module's native testing
         // note says a test must never round-trip a real pointer
-        // through `u32`, so this test calls the plain `&[u8]`
-        // scorer helper directly, instead of building a pointer
-        // into real memory.
+        // through `u32`, so this test calls the plain `&[u8]` scorer
+        // helper directly, instead of building a pointer into real
+        // memory.
         assert_eq!(
-            rank_answer_scorer(b"{\"label\": 1}", b" \t\n").unwrap(),
+            rank_answer_scorer_with_question("", b"192.43", b" \t\n").unwrap(),
             0.0
         );
     }
 
     #[test]
-    fn rank_answer_scorer_rejects_invalid_utf8() {
+    fn the_scorer_rejects_invalid_utf8_in_the_answer() {
         // Same reasoning as the whitespace test above: invalid UTF-8
         // bytes need real content, so this goes through the plain
         // `&[u8]` scorer helper, not a raw pointer.
         let bad_utf8 = &[0xff, 0xfe, 0xfd];
         assert_eq!(
-            rank_answer_scorer(b"{\"label\": 1}", bad_utf8),
+            rank_answer_scorer_with_question("", b"192.43", bad_utf8),
             Err(ScoreError::InvalidUtf8)
         );
     }
 
     #[test]
-    fn rank_answer_scorer_matches_the_old_score_computation_for_a_golden_pair() {
-        // This is the same ground truth and response pair the
-        // `metrics` module's `brier_from_bytes_matches_golden_vector`
-        // test uses. `rank_answer_scorer` must give the same `f64`
-        // score, because it runs the exact same computation for any
-        // miner answer that is not blank.
-        let gt = b"{\"label\": 1}";
-        let ma = b"{\"confidence\": 0.75}";
-        let result = rank_answer_scorer(gt, ma).unwrap();
-        assert_eq!(result, 0.9375);
+    fn a_ground_truth_that_is_not_utf8_is_not_an_error() {
+        // Only the ANSWER is under judgement. A ground truth that is
+        // not UTF-8 reads as an empty ground truth, and the answer
+        // still scores against it through the text path.
+        let bad_utf8 = &[0xff, 0xfe, 0xfd];
+        let result = rank_answer_scorer_with_question("", bad_utf8, b"192.43");
+        assert!(result.is_ok(), "a bad ground truth must not be an error");
+    }
 
-        // 0.9375 is a dyadic rational, 15/16. An `f32` holds this
-        // value with no rounding error, the same as an `f64` does.
-        // Widening the `f32` literal back to `f64` with `f64::from`
-        // is a lossless conversion, so this equality proves the
-        // narrow this value takes at the single narrowing point in
-        // `rank_answer_impl` loses no precision for this golden
-        // pair.
-        assert_eq!(f64::from(0.9375_f32), result);
+    #[test]
+    fn the_scorer_gives_the_golden_value_for_an_exact_numeric_pair() {
+        let result = rank_answer_scorer_with_question("", b"192.43", b"192.43").unwrap();
+        assert_eq!(result, 1.0);
+
+        // 1.0 holds exactly in an `f32` and in an `f64`, so the narrow
+        // at the single narrowing point in `rank_answer_impl` loses no
+        // precision for this pair.
+        assert_eq!(f64::from(1.0_f32), result);
+    }
+
+    #[test]
+    fn the_scorer_gives_a_graded_value_for_a_near_miss() {
+        // The curve must separate a near miss from a wild answer. A
+        // threshold rule would give the same value to both.
+        let near = rank_answer_scorer_with_question("", b"192.43", b"192.44").unwrap();
+        let wild = rank_answer_scorer_with_question("", b"192.43", b"999999.99").unwrap();
+        assert!(near > 0.999, "the near miss gave {near}");
+        assert!(wild < 1e-6, "the wild answer gave {wild}");
     }
 }

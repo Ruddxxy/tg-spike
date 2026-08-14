@@ -238,6 +238,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "corpus-eval"
+version = "0.1.0"
+dependencies = [
+ "corpus-builder",
+ "eval-script",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cpp_demangle"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -547,10 +557,6 @@ dependencies = [
 [[package]]
 name = "eval-script"
 version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "fastrand"
@@ -1073,15 +1079,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad38eb12aea514a0466ea40a80fd8cc83637065948eb4a426e4aa46261175227"
 dependencies = [
  "rustix",
-]
-
-[[package]]
-name = "miner-sim"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "host-runner",
- "serde_json",
 ]
 
 [[package]]

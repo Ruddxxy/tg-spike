@@ -16,12 +16,18 @@ type GoldenVectorFile struct {
 	Vectors []GoldenVector `json:"vectors"`
 }
 
-// GoldenVector is one golden vector case. GroundTruth and Response feed
-// rank_answer as the ground truth field and the miner answer field.
+// GoldenVector is one golden vector case. Question, GroundTruth and
+// MinerAnswer feed rank_answer as its three input fields.
+//
+// The question travels with the vector so that this host sends exactly
+// the same three inputs the wasmtime host sends. One vector carries a
+// junk question on purpose, to prove that a junk question does not
+// change the score on either host.
 type GoldenVector struct {
 	Name        string `json:"name"`
+	Question    string `json:"question"`
 	GroundTruth string `json:"ground_truth"`
-	Response    string `json:"response"`
+	MinerAnswer string `json:"miner_answer"`
 }
 
 // GoldenResult is one output entry. bits_hex holds the IEEE-754 f32 bit
@@ -76,7 +82,7 @@ func runGolden(ctx context.Context, vectorsPath, wasmPath, outPath string) error
 			return fmt.Errorf("vector %q: module load fails: %w", vector.Name, err)
 		}
 
-		score, _, _, _, err := host.Score(ctx, []byte(""), []byte(vector.GroundTruth), []byte(vector.Response))
+		score, _, _, _, err := host.Score(ctx, []byte(vector.Question), []byte(vector.GroundTruth), []byte(vector.MinerAnswer))
 		host.Close(ctx)
 		if err != nil {
 			return fmt.Errorf("vector %q: rank_answer fails: %w", vector.Name, err)

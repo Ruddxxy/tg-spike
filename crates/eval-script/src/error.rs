@@ -5,7 +5,7 @@
 //! answer.
 
 use crate::MAX_INPUT_BYTES;
-use std::fmt;
+use core::fmt;
 
 /// This type lists the ways that a parse or a score step can fail.
 ///
@@ -95,7 +95,9 @@ impl fmt::Display for ScoreError {
     }
 }
 
-impl std::error::Error for ScoreError {}
+// `core` has no `Error` trait on a stable compiler, so this crate
+// does not implement it. The type still implements `Display`, which
+// is what a host-side caller needs to print a reason.
 
 #[cfg(test)]
 mod tests {
