@@ -20,5 +20,6 @@
 pub mod cases;
 pub mod checks;
 pub mod cross_host;
+pub mod display;
 pub mod golden;
 pub mod instance;

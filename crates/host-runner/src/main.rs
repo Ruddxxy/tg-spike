@@ -34,6 +34,7 @@ use anyhow::{Context, Result};
 use host_runner::cases::{self, MalformedCase};
 use host_runner::checks;
 use host_runner::cross_host::{self, CrossHostOutcome};
+use host_runner::display;
 use host_runner::golden::{self, GoldenResult};
 use host_runner::instance::ScriptInstance;
 
@@ -46,6 +47,21 @@ const DEFAULT_WASM_PATH: &str = "target/wasm32-unknown-unknown/release/eval_scri
 const WASMTIME_GOLDEN_OUT_PATH: &str = "target/golden-f32-wasmtime.json";
 
 fn main() {
+    // The display command prints ONLY the cross-engine table. It exists
+    // so that one screenshot can show the determinism evidence with no
+    // surrounding output, no file path, and no user name.
+    if std::env::args().any(|argument| argument == SHOW_CROSS_HOST_FLAG) {
+        match show_cross_host_only() {
+            Ok(true) => std::process::exit(0),
+            Ok(false) => std::process::exit(1),
+            Err(error) => {
+                // The message must not carry a path either.
+                eprintln!("cross-engine display stopped: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let wasm_path = resolve_wasm_path();
     let wazero_golden_path = resolve_wazero_golden_path();
     match run_report(&wasm_path, &wazero_golden_path) {
@@ -65,16 +81,27 @@ fn main() {
 
 /// This reads the `.wasm` path from `argv[1]`, or uses the default path.
 fn resolve_wasm_path() -> PathBuf {
-    match std::env::args().nth(1) {
+    match positional_argument(0) {
         Some(arg) => PathBuf::from(arg),
         None => PathBuf::from(DEFAULT_WASM_PATH),
     }
 }
 
+/// This gives the Nth positional argument, skipping any flag.
+///
+/// A flag must never be read as a file path, or `--show-cross-host`
+/// would be treated as the name of a `.wasm` file.
+fn positional_argument(index: usize) -> Option<String> {
+    std::env::args()
+        .skip(1)
+        .filter(|argument| !argument.starts_with("--"))
+        .nth(index)
+}
+
 /// This reads the wazero golden result path from `argv[2]`, or uses
 /// [`cross_host::DEFAULT_WAZERO_GOLDEN_PATH`].
 fn resolve_wazero_golden_path() -> PathBuf {
-    match std::env::args().nth(2) {
+    match positional_argument(1) {
         Some(arg) => PathBuf::from(arg),
         None => PathBuf::from(cross_host::DEFAULT_WAZERO_GOLDEN_PATH),
     }
@@ -554,4 +581,130 @@ fn print_summary(section_pass: &[(&str, bool)]) {
     let overall = section_pass.iter().all(|(_, pass)| *pass);
     println!();
     println!("overall verdict: {}", if overall { "PASS" } else { "FAIL" });
+}
+
+/// The flag that turns on the display-only cross-engine table.
+const SHOW_CROSS_HOST_FLAG: &str = "--show-cross-host";
+
+/// The number of hash characters the public table prints.
+const PUBLIC_HASH_CHARS: usize = 12;
+
+/// This scores the golden vectors WITHOUT printing anything.
+///
+/// `run_golden_vectors` prints its own section as it goes, which the
+/// display command must not do. This function runs the identical
+/// scoring loop and returns the results only.
+fn score_golden_vectors_quiet(instance: &mut ScriptInstance) -> Result<Vec<GoldenResult>> {
+    let path = cases::golden_vectors_path();
+    let vectors =
+        cases::load_golden_vectors(&path).context("cannot load the golden vectors file")?;
+    if vectors.is_empty() {
+        anyhow::bail!("the golden vectors file has no vectors");
+    }
+
+    let mut results = Vec::with_capacity(vectors.len());
+    for vector in &vectors {
+        let got = instance
+            .rank_answer(
+                vector.question.as_bytes(),
+                vector.ground_truth.as_bytes(),
+                vector.miner_answer.as_bytes(),
+            )
+            .with_context(|| {
+                format!(
+                    "call to 'rank_answer' failed for a vector named '{}'",
+                    vector.name
+                )
+            })?;
+        results.push(golden::golden_result(&vector.name, got));
+    }
+    Ok(results)
+}
+
+/// This prints ONLY the wasmtime vs wazero comparison table.
+///
+/// The output carries no file path, no directory name, and no user
+/// name, because it is made to be screenshotted and posted in public.
+/// Vector names go through [`display::public_label`], which never
+/// returns a real name; see that module for the reason.
+///
+/// The staleness guard stays active. A `.wasm` whose hash does not
+/// match the hash recorded in the wazero file makes this function
+/// print the STALE error and return `false`, so the caller exits
+/// non-zero. A screenshot is therefore provably fresh.
+///
+/// The comparison itself is [`cross_host::compare_cross_host`], the
+/// same function the full report uses. This function only formats.
+fn show_cross_host_only() -> Result<bool> {
+    let wasm_path = resolve_wasm_path();
+    let wazero_path = resolve_wazero_golden_path();
+
+    let mut instance = ScriptInstance::load(&wasm_path).context("cannot load the wasm module")?;
+    let results = score_golden_vectors_quiet(&mut instance)?;
+
+    let sha256 = instance.wasm_sha256().to_string();
+    let short_hash: String = sha256.chars().take(PUBLIC_HASH_CHARS).collect();
+
+    let outcome = cross_host::compare_cross_host(
+        &results,
+        instance.wasm_sha256(),
+        // The comparison uses this only to build a rebuild command for
+        // the missing-file case, which this display never prints.
+        "the module",
+        &wazero_path,
+    );
+
+    match outcome {
+        CrossHostOutcome::MissingFile { .. } => {
+            println!("cross-engine determinism: wasmtime vs wazero");
+            println!("FAIL: there is no usable wazero result file to compare against.");
+            println!("Run the wazero golden mode first, then run this again.");
+            Ok(false)
+        }
+        CrossHostOutcome::Stale {
+            wasmtime_sha256,
+            wazero_sha256,
+        } => {
+            let wasmtime_short: String = wasmtime_sha256.chars().take(PUBLIC_HASH_CHARS).collect();
+            let wazero_short: String = wazero_sha256.chars().take(PUBLIC_HASH_CHARS).collect();
+            println!("cross-engine determinism: wasmtime vs wazero");
+            println!("FAIL: STALE evidence. The two sides ran different modules.");
+            println!("  module this run loaded: {wasmtime_short}");
+            println!("  module the wazero file recorded: {wazero_short}");
+            println!("Rebuild the wazero results against this module, then run again.");
+            Ok(false)
+        }
+        CrossHostOutcome::Compared {
+            results,
+            extra_wazero_names,
+            pass,
+        } => {
+            println!("cross-engine determinism: wasmtime vs wazero");
+            println!("module sha256 {short_hash}, same bytes on both engines");
+            println!();
+            println!(
+                "{:<12} {:>14} {:>14} {:>7}",
+                "vector", "wasmtime", "wazero", "match"
+            );
+            for (index, row) in results.iter().enumerate() {
+                println!(
+                    "{:<12} {:>14} {:>14} {:>7}",
+                    display::public_label(&row.name, index),
+                    row.wasmtime_bits_hex,
+                    row.wazero_bits_hex,
+                    if row.bit_match { "yes" } else { "NO" }
+                );
+            }
+            println!();
+            println!("vectors compared: {}", results.len());
+            if !extra_wazero_names.is_empty() {
+                println!(
+                    "FAIL: the two sides scored different vector sets ({} extra).",
+                    extra_wazero_names.len()
+                );
+            }
+            println!("all bit identical: {pass}");
+            Ok(pass)
+        }
+    }
 }
