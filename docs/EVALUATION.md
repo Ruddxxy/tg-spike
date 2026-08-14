@@ -11,12 +11,15 @@ its sample size.
 
 ## 1. Numeric separation
 
-Ground truth `192.43`. Six miner answers.
+Ground truth `192.43`. Six miner answers. Both columns are the value
+the compiled `.wasm` module returned under wazero, not a native
+recomputation — see section 4 for why that distinction is made and
+section 4.1 for the check behind it.
 
 | miner answer |         ours | reference | note                       |
 | ------------ | -----------: | --------: | -------------------------- |
 | `192.43`     | 1.0000000000 |    1.0000 | exact                      |
-| `192.44`     | 0.9999969994 |    0.0000 | one cent out               |
+| `192.44`     | 0.9999970198 |    0.0000 | one cent out               |
 | `$192.43`    | 1.0000000000 |    0.0000 | same number, unit added    |
 | `192.430`    | 1.0000000000 |    0.0000 | same number, trailing zero |
 | `192.43 USD` | 1.0000000000 |    0.5000 | same number, unit added    |
@@ -33,9 +36,13 @@ zero; it is ten orders of magnitude below the one-cent answer. The
 curve never returns exactly 0.0 for a finite error, which is what lets
 it rank two wrong answers against each other.
 
-```
-cargo run -p corpus-eval --release -- separation
-```
+Every digit above is an `f32`, because `rank_answer` returns `f32`. The
+one-cent row reads 0.9999970198 rather than the 0.9999969994 an `f64`
+computation gives; the difference is the narrowing the ABI performs,
+and the ABI's value is the one the network sees.
+
+This table, the strategy table, and the cross-branch table all come
+from one command sequence, given in full in section 4.
 
 ### The curve
 
@@ -130,9 +137,17 @@ reference is 97.0% identical, but for a different reason: it scores
 
 ### 2.3 Accuracy correlation
 
-This is the central claim: a scorer's output should track real
-accuracy. Correlation between score and negative absolute error in
-Celsius.
+**Read this paragraph before the number below it.** The correlation
+reported here is substantially circular, and the circularity is in the
+corpus, not in the scorer. The miner's value comes from `temp_c` in its
+own response. The ground truth is `actual_c` from the archive. The
+error is `|temp_c - actual_c|`. Our score is a deterministic monotonic
+function of that same difference. Correlating the score against the
+error therefore largely measures that a monotonic curve is monotonic.
+A high number here is close to arithmetically guaranteed, and a
+reviewer should treat it as such.
+
+Correlation between score and negative absolute error in Celsius:
 
 | miner               |        n |       ours |  reference |
 | ------------------- | -------: | ---------: | ---------: |
@@ -140,6 +155,36 @@ Celsius.
 | openweathermap      |      323 |     0.8739 |     0.1319 |
 | weatherapi          |     1905 |     0.9039 |     0.1962 |
 | **all pooled**      | **6169** | **0.9001** | **0.2068** |
+
+Given that caveat, here is what the number does and does not support.
+
+**What survives scrutiny.** One thing, and it is a claim about the
+reference rather than about us. Given the identical real inputs, the
+reference scorer returns a median of **0.0000 for all three miners**.
+It cannot separate a miner 0.1 C out from one 10 C out. Its correlation
+is 0.21 not because the relationship is hard to detect but because it
+mostly emits a constant. A monotonic curve reaching 0.90 where a
+constant reaches 0.21 says little about the curve; that the protocol's
+own baseline emits a constant on 6,169 rows of its own traffic is worth
+knowing on its own.
+
+Our own tracking of the error is NOT separate evidence, and this
+document does not offer it as such. It is the circularity above,
+restated. The claim that our scorer survives real traffic rests on
+**section 2.1** instead, which does not use the correlation at all:
+100% quantity extraction on 6,169 real miner values, across all three
+ground-truth renderings, with 99.8% of rows scoring identically
+whichever rendering is used. That is a measurement of parsing, unit
+conversion, and rendering robustness on production text, and it stands
+whether or not the correlation means anything.
+
+**What does not survive scrutiny.** This is not independent evidence
+that our scorer measures accuracy well. Establishing that needs ground
+truth that does not derive from the miner's own answer — in particular
+a truth joined at the question's location and time rather than at the
+coordinates the miner returned. Building that is the ask-harness work
+in Wave 5, and **it is not done**. Until it is, treat 0.9001 as a
+consistency check, not as an accuracy result.
 
 Per-miner accuracy and score:
 
@@ -151,10 +196,6 @@ Per-miner accuracy and score:
 
 Error is in Celsius. The score column uses the bare rendering.
 
-The reference median is 0.000000 for all three miners. It assigns the
-same score to a miner 0.1 C out and a miner 10 C out, which is why its
-correlation with real accuracy is 0.21.
-
 **Do not read the per-miner error columns as a miner ranking.** The
 samples are confounded: different cities, times, and forecast horizons,
 and n ranges from 323 to 3941.
@@ -164,6 +205,14 @@ cargo run -p corpus-eval --release -- stats
 ```
 
 ### 2.4 The five known-bad rows
+
+**Zero of the five were reliably caught.** The Miami climate group,
+which answered an October 2022 question with an August 2026 forecast,
+scored **0.563 against a corpus mean of 0.519 — above average**. The
+Maringá group, which answered for the wrong continent, scored 0.348,
+below average but not because anything detected the error. The
+remaining three never reached the scored set. There is no reading of
+this table in which the scorer caught a known-bad answer.
 
 | group                        | in corpus | scored | ours mean | ref mean | err mean | penalised?            |
 | ---------------------------- | --------: | -----: | --------: | -------: | -------: | --------------------- |
@@ -175,34 +224,47 @@ cargo run -p corpus-eval --release -- stats
 
 Corpus mean of our score for comparison: 0.518548, n = 6169.
 
-**None of the five is reliably caught. Two are not caught at all, and
-three are not in the scored set.** The detail matters:
+Row by row:
 
 - **Maringa** resolved "Maringá PR Brazil" to Brazil, Indiana. It scores
   0.348 against a corpus mean of 0.519 — below average, but only
   because the Indiana forecast happens to be less accurate, not because
-  the scorer detected a wrong continent.
-- **Miami climate** answered an October 2022 question with an August
-  2026 forecast. It scores **0.563, above the corpus mean**, with a
-  mean error of 0.983 C — better than average.
+  the scorer detected a wrong continent. A wrong-continent answer that
+  landed near the right temperature by coincidence would have scored
+  well, and nothing in the scorer would have objected.
+- **Miami climate** is that coincidence. It answered an October 2022
+  question with an August 2026 forecast and scored **0.563, above the
+  corpus mean**, with a mean error of 0.983 C — better than average. The
+  scorer rewarded it.
 - **Lisbon** (null result) and **moon** (town Moon, Iran) have no
   archive ground truth, so they were dropped before scoring.
 - **Ethereum** is not in this corpus at all. The corpus builder handles
   only the three weather miners.
 
-The reason is structural and worth stating plainly. The evaluator
-receives one extracted value and one ground-truth value. It never sees
-a location or a timestamp. It can only catch a wrong place or a wrong
-date if that error produces a wrong _number_ against a correct truth.
-In this corpus it does not, because the ground truth was joined at the
-coordinates and valid time the **miner itself returned**. A miner that
-answered for the wrong city was scored against the truth for that wrong
-city. The pair is self-consistent and no value-comparing scorer can see
-the error.
+**Why, and why it is a protocol observation rather than an excuse.**
+Wave 2 joined the archive at the coordinates and valid time the **miner
+itself returned**. A miner that answered for Brazil, Indiana was scored
+against Indiana's actual weather. The pair is self-consistent by
+construction, so the value comparison is correct and the answer is
+still wrong. No value-comparing evaluator can detect that, because the
+ABI hands the evaluator one extracted value and one ground-truth value
+and never shows it the request parameters — not the location, not the
+requested timestamp.
 
-That is a limit of the corpus construction as much as of the scorer.
-Catching these needs the evaluator to see the request parameters, which
-the ABI does not provide.
+This is worth putting in front of the core team because it bounds what
+any Track 2 submission can do. **While `rank_answer` receives only
+`(question, ground_truth, miner_answer)`, and the truth is joined at
+miner-supplied coordinates, no scoring rule can catch these — ours or
+anyone's.** The limit is in the inputs, not in the rule applied to
+them: the evidence that would distinguish a right answer from a
+wrong-location one never reaches the module.
+
+Two things would change that, and both sit outside the scoring module.
+The request parameters could be added to the ABI, which is the core
+team's call. Or the truth pipeline could resolve the location from the
+question independently of the answer, which is a corpus change and is
+what the Wave 5 ask-harness is built to do. It is not done, so this
+document claims nothing on that front.
 
 ```
 cargo run -p corpus-eval --release -- knownbad
@@ -210,75 +272,77 @@ cargo run -p corpus-eval --release -- knownbad
 
 ---
 
-## 3. Ranking stability
+## 3. Ranking stability: not measurable on this corpus
 
-Bootstrap rank-flip: rank miners by mean score, resample items with
-replacement 2000 times using a fixed seed, recompute the ranking, and
-count how often each adjacent pair swaps. Every miner uses the same
-resampled item set in a round, so the comparison is paired.
+**No ranking result is published here, because the data cannot support
+one.**
 
-The item is a paraphrase cluster. A cluster counts only when every
-compared miner answered it.
+Ranking miners requires head-to-head data: the same question, at the
+same valid time, answered by more than one miner. The Telegraph daemon
+feed does not produce it. The protocol routes each question to one
+miner, so the feed records exactly one answer per question and there is
+nothing to compare directly. Paired comparisons had to be reconstructed
+after the fact from paraphrase clusters — groups of questions that ask
+the same thing in different words at the same valid time.
 
-**n = 2 to 5 clusters. This is a very small sample.** The corpus has 40
-clusters; 7 hold more than one miner; 5 of those survive into the
-scored set; only 2 are answered by all three miners.
+That reconstruction yields almost nothing. The corpus holds 40
+clusters. 7 hold more than one miner. 5 of those survive into the
+scored set, and only 2 are answered by all three miners. A bootstrap
+flip rate computed on 2 items is a coin toss, and reporting it to one
+decimal place would give it a precision it does not have.
 
-All three miners together, n = 2 paired clusters:
+This is a property of the routing, not of either scorer, and both
+scorers face it equally. **It is worth reporting to the core team on
+its own account**: a network whose feed is a single-miner-per-question
+log cannot be used to compare miners retrospectively, however good the
+scoring module is. Comparative evaluation needs either a feed that
+records the losing candidates, or a client that asks the same question
+repeatedly and lets routing spread it. The Wave 5 ask-harness targets
+the second; it has not produced data yet.
 
-| scorer    | rank 1 vs 2 flip | rank 2 vs 3 flip |
-| --------- | ---------------: | ---------------: |
-| ours      |            25.1% |            24.3% |
-| reference |             0.0% |            25.1% |
-
-Pairwise, which uses more clusters:
-
-| pair                         |   n | ours flip | reference flip |
-| ---------------------------- | --: | --------: | -------------: |
-| zeus vs openweathermap       |   5 |      1.1% |           1.7% |
-| zeus vs weatherapi           |   2 |      0.0% |           0.0% |
-| openweathermap vs weatherapi |   2 |     24.3% |          25.1% |
-
-**The comparison set is too small to rank these miners.** A 25% flip
-rate on two items is a coin toss. The one comparison with any weight is
-zeus versus openweathermap at n = 5 clusters and a 1.1% flip rate, and
-five items is still not enough to publish a ranking.
-
-This is a property of the corpus, not of either scorer: the three
-weather miners rarely answer the same question at the same valid time.
-Both scorers face the same limitation, and their flip rates are close
-because the sample, not the metric, is the constraint.
-
-```
-cargo run -p corpus-eval --release -- rankflip
-```
+The method itself is implemented and tested in
+`crates/corpus-eval/src/bootstrap.rs` — paired resampling with a fixed
+seed, one shared index set per round. It is correct and it becomes
+usable the moment real head-to-head data exists. It is simply not run
+against n = 2.
 
 ---
 
 ## 4. Adversarial results
 
-Every strategy below is a test in
-`crates/eval-script/tests/adversarial.rs`. The honest reference is a
-miner 10% out, which scores 0.081.
+**Both columns below are measured by running the compiled `.wasm`
+modules under wazero** — ours and the protocol's reference module —
+through the same harness path that produced the corpus columns in
+section 2. Neither number comes from a reimplementation.
 
-| strategy                 | answer                   |     ours | reference |
-| ------------------------ | ------------------------ | -------: | --------: |
-| constant word            | `yes`                    | 0.000000 |    0.0000 |
-| most common number       | `100`                    | 0.003886 |    0.0000 |
-| subset of ground truth   | `malicious`              | 0.250000 |    1.0000 |
-| empty                    | ``                       | 0.000000 |    0.0000 |
-| control characters       | `\0\1\2`                 | 0.000000 |    0.0000 |
-| long padded answer       | `malicious filler…`      | 0.500000 |    0.1250 |
-| many candidate numbers   | `1 2 5 … 192.43 …`       | 0.083333 |    0.0833 |
-| unit spoof, K value as C | `307.85 C`               | 0.000015 |    0.5000 |
-| precision spam           | `192.4300000000001`      | 1.000000 |    0.0000 |
-| hedge word               | `about 42`               | 1.000000 |    0.5000 |
-| hedged range             | `34 to 36`               | 0.262188 |    0.0000 |
-| negation                 | `not malicious`          | 0.000000 |    0.5000 |
-| double negation          | `not not malicious`      | 1.000000 |    0.3333 |
-| one common token         | `is`                     | 0.500000 |    1.0000 |
-| copy question back       | (question verbatim)      | 0.000000 |    0.0000 |
-| copy junk question back  | `[direct] 207 -> /price` | 0.000000 |    0.0000 |
+That distinction matters. An earlier draft of this table built the
+reference column from a native Rust copy of the published
+`word_overlap`. The copy is faithful, and section 4.1 shows the check
+that proves it, but "we reimplemented their scorer and ours beats it"
+is a claim a reviewer should not have to take on trust.
+
+The honest comparison throughout is a miner 10% out, which scores
+0.081. Every row is also a test in
+`crates/eval-script/tests/adversarial.rs`.
+
+| strategy                 | ground truth                 | answer                           |     ours | reference |
+| ------------------------ | ---------------------------- | -------------------------------- | -------: | --------: |
+| constant word            | `192.43`                     | `yes`                            | 0.000000 |    0.0000 |
+| most common number       | `192.43`                     | `100`                            | 0.003886 |    0.0000 |
+| subset of ground truth   | `high risk malicious binary` | `malicious`                      | 0.250000 |    1.0000 |
+| empty                    | `192.43`                     | (empty)                          | 0.000000 |    0.0000 |
+| control characters       | `192.43`                     | `\0\1\2`                         | 0.000000 |    0.0000 |
+| long padded answer       | `malicious`                  | `malicious` + `filler` × 200     | 0.500000 |    0.0050 |
+| many candidate numbers   | `192.43`                     | 14 numbers, one of them `192.43` | 0.071429 |    0.0714 |
+| unit spoof, K value as C | `34.7 C`                     | `307.85 C`                       | 0.000015 |    0.5000 |
+| precision spam           | `192.43`                     | `192.4300000000001`              | 1.000000 |    0.0000 |
+| hedge word               | `42`                         | `about 42`                       | 1.000000 |    0.5000 |
+| hedged range             | `35`                         | `34 to 36`                       | 0.262188 |    0.0000 |
+| negation                 | `malicious`                  | `not malicious`                  | 0.000000 |    0.5000 |
+| double negation          | `malicious`                  | `not not malicious`              | 1.000000 |    0.3333 |
+| one common token         | `is malicious`               | `is`                             | 0.500000 |    1.0000 |
+| copy question back       | `34.7 C`                     | the question verbatim            | 0.000000 |    0.0000 |
+| copy junk question back  | `192.43`                     | `[direct] 207 -> /price`         | 0.000000 |    0.0000 |
 
 Cross-branch farming, where the answer makes the scorer leave the
 numeric path:
@@ -288,7 +352,7 @@ numeric path:
 | `192.43 USD`                  | `USD`                   | 0.000000 |    1.0000 |
 | `34.7 C`                      | `C`                     | 0.000000 |    1.0000 |
 | `12 gwei`                     | `gwei`                  | 0.000000 |    1.0000 |
-| `192.43 USD`                  | `USD USD USD USD…`      | 0.000000 |    1.0000 |
+| `192.43 USD`                  | `USD` × 8               | 0.000000 |    1.0000 |
 | `The temperature was 28.9 C.` | `the temperature was C` | 0.000000 |    0.7500 |
 | `The temperature was 28.9 C.` | `temperature`           | 0.000000 |    1.0000 |
 
@@ -296,12 +360,64 @@ numeric path:
 answers with the unit and nothing else scores a perfect result against
 the baseline on every priced intent.
 
+Three rows state a repeat count, because the reference score depends
+on it. The reference divides by the ANSWER token count, so a padded
+answer's reference score is a function of how much padding it carries
+and means nothing unless the count is stated: 200 repeats of `filler`
+gives 0.0050, 7 repeats would give 0.1250. Our score is 0.500000 at any
+repeat count, because a token set removes the duplicates.
+
 ```
-cargo run -p corpus-eval --release -- crossbranch
+cargo run -p corpus-eval --release -- adversarial-emit
+(cd tools/wazero-runner && go run . -corpus ../../corpus/adversarial-input.jsonl \
+   -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+   -b ../../reference/scoring_module.wasm \
+   -out ../../corpus/adversarial-scores.jsonl)
+cargo run -p corpus-eval --release -- adversarial-report
 cargo test -p eval-script --test adversarial
 ```
 
-### 4.1 Strategies that still work
+### 4.1 The native copy is a test oracle, not a source
+
+`crates/corpus-eval/src/baseline.rs` still holds a native copy of the
+reference `word_overlap`. It no longer produces any number in this
+document. `adversarial-report` recomputes every row with it and prints
+the disagreements:
+
+```
+=== COMPILED MODULE VERSUS NATIVE COPY ===
+all 28 rows agree to within 1e-6
+the native word_overlap copy is faithful to the shipped module
+```
+
+All 28 rows agree, so the earlier draft's reference column was not
+wrong about the reference module's behaviour. Three published numbers
+nonetheless changed, none of them for that reason:
+
+- The **spray** row was transcribed from a 12-number answer while the
+  test sprays 14 numbers: 0.083333 becomes 0.071429.
+- The **padding** row was transcribed from a 7-repeat padding while the
+  case pads 200 times: the reference falls from 0.1250 to 0.0050.
+- The **one cent out** row in section 1 carried an `f64` value,
+  0.9999969994, for a result the ABI returns as `f32`. It is
+  0.9999970198.
+
+All three are now generated from
+`crates/corpus-eval/src/adversarial.rs`, which is the single source for
+every table in sections 1 and 4 — a row that is not in that file is not
+in this report.
+
+The harness also scores each case three times, under three
+ground-truth fields holding identical text, and the report fails if the
+three scores differ. That is a free determinism check on the harness
+itself.
+
+The `separation` and `crossbranch` subcommands still print native
+tables, as a fast development view. They now print a banner saying so
+and are not listed in section 6, because their numbers are not the
+published ones.
+
+### 4.2 Strategies that still work
 
 Three, and a defect this review found in our own scorer.
 
@@ -332,7 +448,7 @@ precision spam, hedge word, and double negation all score 1.0 because
 they **are the correct answer** in an unusual form. `not not malicious`
 means `malicious`.
 
-### 4.2 A defect this review found in our own scorer
+### 4.3 A defect this review found in our own scorer
 
 Wave 3 tested only inputs written by hand. Running the scorer against
 real corpus renderings found two live defects:
@@ -390,8 +506,6 @@ git clone --depth 1 https://github.com/telegraphprotocol/telegraph-examples /tmp
 mkdir -p reference && cp /tmp/tgref/wasm-scoring-module/rust-module/target/wasm32-unknown-unknown/release/scoring_module.wasm reference/
 
 # tables
-cargo run -p corpus-eval --release -- separation
-cargo run -p corpus-eval --release -- crossbranch
 cargo run -p corpus-eval --release -- renderings
 cargo run -p corpus-eval --release -- prepare
 (cd tools/wazero-runner && go run . -corpus ../../corpus/eval-input.jsonl \
@@ -401,7 +515,14 @@ cargo run -p corpus-eval --release -- prepare
 cargo run -p corpus-eval --release -- parsecov
 cargo run -p corpus-eval --release -- stats
 cargo run -p corpus-eval --release -- knownbad
-cargo run -p corpus-eval --release -- rankflip
+
+# the adversarial tables, through the compiled modules
+cargo run -p corpus-eval --release -- adversarial-emit
+(cd tools/wazero-runner && go run . -corpus ../../corpus/adversarial-input.jsonl \
+   -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+   -b ../../reference/scoring_module.wasm \
+   -out ../../corpus/adversarial-scores.jsonl)
+cargo run -p corpus-eval --release -- adversarial-report
 
 # verification
 cargo fmt --all -- --check
@@ -418,13 +539,18 @@ every HTTP response, so a rerun makes zero network requests.
 ## 7. What this evaluation does not show
 
 - **It does not show that our scorer ranks miners better.** The
-  multi-miner comparison set is 2 to 5 clusters. That is too small.
+  multi-miner comparison set is 2 to 5 clusters, so no ranking result
+  is reported at all. See section 3.
 - **It does not show that wrong-location or wrong-time answers are
-  caught.** Two such groups were measured and neither is penalised,
-  for a structural reason given in section 2.4.
-- **The correlation of 0.90 is measured against archive-derived truth
-  on one intent family**, weather temperature, on 6,169 rows from three
-  miners. It is not evidence about price or gas intents.
+  caught.** Zero of five known-bad groups were caught, and one scored
+  above the corpus mean. See section 2.4 for why no value-comparing
+  module can catch them under this ABI.
+- **The correlation of 0.90 is substantially circular** — the score is
+  a monotonic function of the same difference the correlation measures
+  — and it is measured against archive-derived truth on one intent
+  family, weather temperature, on 6,169 rows from three miners. It is
+  not evidence about price or gas intents, and it is not an
+  independent accuracy result. See section 2.3.
 - **`TOLERANCE = 0.03` was chosen to produce 0.900 at 1% error.** No
   protocol document justifies that value. A different intent needs a
   different one, and the constant exists to make that a one-line change.

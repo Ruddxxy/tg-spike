@@ -141,6 +141,7 @@ pub fn run() -> Vec<CrossBranchResult> {
 
 /// This function prints the cross-branch table.
 pub fn print_table() {
+    print_native_notice();
     let results = run();
     println!(
         "{:<26} {:<30} {:<26} {:>10} {:>10}",
@@ -182,6 +183,26 @@ pub fn print_table() {
     if beats == 0 {
         println!("  no attack beats the honest miner");
     }
+}
+
+/// This function warns that the `baseline` column here is native.
+///
+/// The two tables in this module compute the baseline column with
+/// `baseline::baseline_score`, a native copy of the reference
+/// `word_overlap`. They are a fast development view. docs/EVALUATION.md
+/// publishes neither: its tables come from `adversarial-report`, which
+/// scores the SAME cases with the protocol's compiled `.wasm`. The two
+/// agree to 1e-6, and `adversarial-report` checks that on every run,
+/// but a reviewer must not have to take that on trust, so the published
+/// number is always the compiled one.
+///
+/// A number here can also differ in its last digits, because this path
+/// keeps `f64` while the ABI narrows to `f32`.
+fn print_native_notice() {
+    println!("NOTE: the baseline column below is the NATIVE copy, and this table is");
+    println!("      not the published one. See docs/EVALUATION.md section 4.1, and");
+    println!("      run `corpus-eval adversarial-report` for the compiled figures.");
+    println!();
 }
 
 /// This function cuts a text to a length, for a table cell.
@@ -236,6 +257,7 @@ pub fn print_renderings() {
 /// million out. It cannot tell them apart. It also fails two answers
 /// that hold the SAME number written a different way.
 pub fn print_separation() {
+    print_native_notice();
     let truth = "192.43";
     let answers = [
         "192.43",

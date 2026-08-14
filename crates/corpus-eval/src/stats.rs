@@ -10,8 +10,9 @@ use serde::Deserialize;
 /// One scored row, as the wazero runner writes it.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ScoredRow {
-    /// The corpus row number. The known-bad report names rows by it.
-    #[allow(dead_code)]
+    /// The corpus row number. The known-bad report names rows by it,
+    /// and the adversarial report joins a score back to its case by
+    /// it.
     pub row_id: usize,
     /// The miner slug.
     pub miner_slug: String,

@@ -9,6 +9,7 @@
 //! cargo run -p corpus-eval -- crossbranch
 //! ```
 
+mod adversarial;
 mod baseline;
 mod bootstrap;
 mod corpus;
@@ -22,6 +23,34 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let command = args.get(1).map(String::as_str).unwrap_or("help");
     match command {
+        "adversarial-emit" => {
+            let output = std::path::Path::new("corpus/adversarial-input.jsonl");
+            match adversarial::emit(output) {
+                Ok(count) => {
+                    println!("wrote {count} adversarial cases to {}", output.display());
+                    println!("now score them with the wazero runner, then run adversarial-report");
+                }
+                Err(error) => {
+                    eprintln!("cannot write the adversarial cases: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "adversarial-report" => {
+            let path = std::path::Path::new("corpus/adversarial-scores.jsonl");
+            match stats::load_scores(path) {
+                Ok(rows) => {
+                    if let Err(error) = adversarial::print_report(&rows) {
+                        eprintln!("the adversarial report failed: {error}");
+                        std::process::exit(1);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("cannot read the adversarial scores: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         "crossbranch" => crossbranch::print_table(),
         "renderings" => crossbranch::print_renderings(),
         "separation" => crossbranch::print_separation(),
@@ -141,7 +170,8 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: corpus-eval <crossbranch|renderings|separation|prepare|stats|parsecov|rankflip|knownbad>"
+                "usage: corpus-eval <crossbranch|renderings|separation|prepare|stats|parsecov|\
+                 rankflip|knownbad|adversarial-emit|adversarial-report>"
             );
             std::process::exit(2);
         }
