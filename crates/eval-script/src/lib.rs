@@ -5,7 +5,7 @@
 //! this crate as a WASM module. The module exports three functions:
 //! `alloc`, `dealloc`, and `rank_answer`. The validator calls
 //! `rank_answer` with a question, a ground truth value, and a miner
-//! answer value. The module returns a score. This wave of the ABI
+//! answer value. The module returns a score. This version of the ABI
 //! does not read the question bytes; see the `abi` module doc
 //! comment for the exact argument order and the exact rule order.
 //!

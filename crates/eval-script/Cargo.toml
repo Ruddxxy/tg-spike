@@ -8,8 +8,8 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# This crate has no dependency. An earlier wave parsed both inputs as
-# JSON with serde_json. Both inputs are now short texts that hold one
+# This crate has no dependency. An earlier version parsed both inputs
+# as JSON with serde_json. Both inputs are now short texts that hold one
 # value each, so there is no JSON to parse. The number reader in the
 # `value` module builds a clean ASCII form and then calls the `f64`
 # parser in `core`, which is pure Rust and rounds correctly.

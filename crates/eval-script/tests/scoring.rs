@@ -1,7 +1,7 @@
 //! This test file covers every scoring branch, A through F.
 //!
 //! Each branch in the `score` module dispatch has at least one test
-//! here. The numeric cases from the wave brief have their own test.
+//! here. The numeric cases have their own test.
 
 use eval_script::score::score_answer;
 

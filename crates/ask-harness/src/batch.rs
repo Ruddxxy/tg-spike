@@ -16,9 +16,9 @@
 //! ## Why the city list is fixed here
 //!
 //! The city is the unit of ground truth. Its coordinates are geocoded
-//! ONCE from this list and never read out of a miner response, because
-//! wave 2 joined truth at miner-returned coordinates and that is
-//! exactly what made its five known-bad rows undetectable.
+//! ONCE from this list and never read out of a miner response. The
+//! daemon-feed corpus joined truth at miner-returned coordinates, and
+//! that is exactly what made its five known-bad rows undetectable.
 //!
 //! The list spans time zones so the asks land at different local hours,
 //! which keeps the set from being ten samples of the same weather.
@@ -31,8 +31,8 @@ pub struct City {
     pub name: &'static str,
     /// The country, which the geocoder needs to disambiguate.
     ///
-    /// Wave 2 resolved "Maringá PR Brazil" to Brazil, Indiana. A bare
-    /// city name is not a location.
+    /// The daemon-feed corpus resolved "Maringá PR Brazil" to Brazil,
+    /// Indiana. A bare city name is not a location.
     pub country: &'static str,
     /// Roughly how far the city sits from UTC, for the report only.
     pub utc_offset_hours: i8,

@@ -68,7 +68,7 @@ pub struct ExecutionInfo {
     /// slice of input text for this JSON value during the top-level
     /// parse, instead of building a `Value` tree and re-printing it
     /// later. This is what ends up in the corpus's `miner_answer`
-    /// field, so a later scoring wave gets the exact bytes the daemon
+    /// field, so the scoring tools get the exact bytes the daemon
     /// recorded, not this crate's idea of how to format them.
     ///
     /// The literal text `"null"` when the daemon recorded no result.

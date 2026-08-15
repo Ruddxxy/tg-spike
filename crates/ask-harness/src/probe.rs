@@ -2,19 +2,19 @@
 //!
 //! ## What the probe decides
 //!
-//! Wave 4 could not rank miners, because the daemon feed routes one
-//! miner per question and only 2 paraphrase clusters held all three
-//! miners. The plan to fix that is to ask the SAME question many times
-//! and let the Engine's router spread it over miners.
+//! The daemon feed cannot rank miners, because it routes one miner per
+//! question and only 2 paraphrase clusters held all three miners. The
+//! plan to fix that is to ask the SAME question many times and let the
+//! Engine's router spread it over miners.
 //!
 //! That plan rests on an assumption nobody has tested: that routing is
 //! not deterministic for a fixed query. If the router sends every ask
 //! for one question to one miner, then no amount of asking produces a
 //! head-to-head pair, and the rest of the budget would buy nothing.
 //!
-//! **This probe is a GATE, not a result.** It answers one question:
-//! does a fixed query reach more than one miner? A single-miner result
-//! stops the wave. It is a real finding either way, and a cheap one.
+//! This probe is a GATE, not a result. It answers one question: does a
+//! fixed query reach more than one miner? A single-miner result stops
+//! the work here. It is a real finding either way, and a cheap one.
 //!
 //! ## Why the query is fixed and why it is a weather query
 //!
@@ -303,7 +303,7 @@ pub fn print_report(report: &ProbeReport, asked: usize, path: &Path) -> bool {
             report.distinct_miners
         );
         println!("A fixed query does not spread over miners, so asking more of");
-        println!("the same question cannot produce a head-to-head pair. The wave");
+        println!("the same question cannot produce a head-to-head pair. This");
         println!("stops here rather than spending the rest of the budget.");
     }
     open

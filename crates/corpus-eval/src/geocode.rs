@@ -3,11 +3,11 @@
 //!
 //! ## Why this exists at all
 //!
-//! Wave 2 joined the archive at the coordinates the MINER returned. A
-//! miner that answered for Brazil, Indiana was scored against Indiana's
-//! weather, so the pair was self-consistent and the error was
-//! undetectable. Section 2.4 of the evaluation reports that zero of
-//! five known-bad rows were caught for exactly that reason.
+//! The daemon-feed corpus joined the archive at the coordinates the
+//! MINER returned. A miner that answered for Brazil, Indiana was scored
+//! against Indiana's weather, so the pair was self-consistent and the
+//! error was undetectable. Zero of five known-bad rows were caught for
+//! exactly that reason.
 //!
 //! This module is the fix. The coordinates come from the city list the
 //! batch plan holds, resolved by Open-Meteo's geocoder. A miner

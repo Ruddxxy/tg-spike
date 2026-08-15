@@ -8,8 +8,9 @@
 //! place or a wrong date when that error produces a wrong NUMBER
 //! against a correct truth.
 //!
-//! In this corpus it does not. Wave 2 joined the archive actual at the
-//! coordinates and the valid time that the MINER returned. So a miner
+//! In this corpus it does not. The daemon-feed corpus joined the
+//! archive actual at the coordinates and the valid time that the MINER
+//! returned. So a miner
 //! that answered for the wrong city was scored against the truth for
 //! that wrong city, and the pair is self-consistent. The same holds
 //! for a wrong date.

@@ -309,7 +309,7 @@ fn there_is_no_cliff_to_sit_on() {
 ///
 /// This is the residual cost of a set based overlap. A fix would need
 /// a token weight, such as a rarity weight, and that needs a corpus
-/// the module cannot carry. A reviewer may reasonably want that.
+/// the module cannot carry.
 #[test]
 fn known_weakness_one_common_token_against_a_short_ground_truth() {
     let earned = score("is malicious", "is");
@@ -357,10 +357,10 @@ fn no_attack_in_this_file_reaches_a_perfect_score() {
 // scorer LEAVE the numeric path, then farms the text path, which has a
 // much softer floor.
 //
-// The wave 4 review predicted that a ground truth of "192.43 USD"
-// against an answer of "USD" would fall through to text and score 0.5.
-// It does not: the numeric branch has no text fallback, so it already
-// scored 0.0. The probe DID find real leaks on the prose and JSON
+// A ground truth of "192.43 USD" against an answer of "USD" was
+// expected to fall through to text and score 0.5. It does not: the
+// numeric branch has no text fallback, so it already scored 0.0. The
+// cross-branch probe DID find real leaks on the prose and JSON
 // renderings of a ground truth, and the tests below pin those.
 // ---------------------------------------------------------------
 
@@ -396,7 +396,7 @@ fn repeating_the_unit_many_times_earns_nothing() {
 
 #[test]
 fn giving_back_the_prose_words_without_the_number_earns_nothing() {
-    // This is the leak the wave 4 probe found. The answer repeats the
+    // This is the leak the cross-branch probe found. The answer repeats the
     // scaffolding of the ground truth and omits the value. It scored
     // 0.667 before the fix, while an honest miner 10 percent out
     // scored 0.081.

@@ -108,9 +108,11 @@ mod tests {
     use super::*;
     use crate::eip712::to_hex;
 
-    /// This is a well known TEST key. It holds nothing and it must
-    /// never be funded. It appears in many test suites, so its address
-    /// is easy to check against another implementation.
+    /// The published go-ethereum test vector key. This is NOT a secret.
+    /// It ships in the go-ethereum test suite and in the documentation
+    /// of many Ethereum libraries, so its address is easy to check
+    /// against another implementation. It holds nothing and it must
+    /// never be funded.
     const TEST_KEY: &str = "0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318";
 
     #[test]

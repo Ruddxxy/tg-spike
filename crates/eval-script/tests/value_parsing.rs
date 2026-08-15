@@ -1,8 +1,8 @@
 //! This test file covers every value the parser must read, and every
 //! value it must refuse.
 //!
-//! The table in the wave brief drives these tests. Each case in the
-//! brief has a test here.
+//! Every rendering the parser must accept, and every text it must
+//! refuse, has a test here.
 
 use eval_script::value::{parse_value, Family, Unit};
 

@@ -2,8 +2,8 @@
 //! `transferWithAuthorization`.
 //!
 //! The module builds every byte by hand. It has no Ethereum library.
-//! The two encodings it needs are simple, and writing them out makes
-//! each field visible to a reviewer:
+//! The two encodings it needs are simple, and writing them out keeps
+//! every field visible at the call site:
 //!
 //! - `abi.encode` for a fixed-size field is a 32 byte big-endian word.
 //!   An address goes in the low 20 bytes, with 12 zero bytes in front.

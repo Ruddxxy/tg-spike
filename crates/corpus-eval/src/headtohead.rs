@@ -17,11 +17,12 @@
 //!   archive actual is looked up at this hour, at the city's own
 //!   coordinates.
 //!
-//! The truth is therefore joined at the time WE asked and the place WE
-//! named, never at anything a miner reported. That is the wave 2 defect
-//! being designed out: wave 2 joined at miner-returned coordinates, so
-//! a miner answering for the wrong city was scored against that wrong
-//! city's weather and the error was undetectable.
+//! The truth is therefore joined at the time the client asked and the
+//! place the client named, never at anything a miner reported. That is
+//! the daemon-feed corpus defect being designed out: it joined at
+//! miner-returned coordinates, so a miner answering for the wrong city
+//! was scored against that wrong city's weather and the error was
+//! undetectable.
 //!
 //! The gap between the two times is measured and reported. A miner
 //! serving a stale reading shows up there.
@@ -540,8 +541,8 @@ mod tests {
     #[test]
     fn the_two_new_miners_are_not_ones_the_normaliser_handles() {
         // lacre-meteo and oathcast-weather are live but absent from the
-        // wave 2 corpus, so the normaliser has no schema for them. This
-        // test records that, so a future wave that adds one notices.
+        // daemon-feed corpus, so the normaliser has no schema for them.
+        // This test records that, so whoever adds one notices.
         for id in ["0", "64173"] {
             let slug = slug_for(id).expect("a slug");
             assert!(

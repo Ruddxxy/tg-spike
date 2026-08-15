@@ -8,10 +8,10 @@
 //! no longer needs a block.
 //!
 //! `rank_answer` takes three byte ranges: a question, a ground
-//! truth, and a miner answer. This wave does not read the question
-//! bytes. `rank_answer` scores the ground truth against the miner
-//! answer with the same Brier computation the old `score` export
-//! ran. See `rank_answer_impl` for the exact rule order.
+//! truth, and a miner answer. This version of the ABI does not read
+//! the question bytes. `rank_answer` scores the ground truth against
+//! the miner answer on the relative error between the two values. See
+//! `rank_answer_impl` for the exact rule order.
 //!
 //! This module also keeps `score`, `score_log_loss`, and
 //! `score_batch` as plain Rust functions. These three functions are
@@ -354,8 +354,8 @@ fn rank_answer_scorer_with_question(
 /// the same rejection.
 ///
 /// `question_ptr` and `question_len` name the question argument.
-/// Wave 2 of this ABI migration will read the question bytes and
-/// use them to score an answer. This wave does not read them. The
+/// A later version of this ABI may read the question bytes and
+/// use them to score an answer. This version does not read them. The
 /// line right below this doc comment still binds them to named
 /// variables, not to `_`, so the parameter names stay visible in
 /// the function signature and in any caller that reads this code.

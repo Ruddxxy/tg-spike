@@ -85,8 +85,8 @@ pub const TOLERANCE: f64 = 0.03;
 /// The value 1.0 is a judgement call. It suits a temperature, a price,
 /// and a percent, which are the quantities in the corpus. It is too
 /// large for a quantity whose normal size is far below 1.0, and for
-/// such a quantity this floor makes the score too kind. A reviewer may
-/// reasonably choose a different floor.
+/// such a quantity this floor makes the score too kind. A different
+/// intent may need a different floor.
 pub const ABSOLUTE_FLOOR: f64 = 1.0;
 
 /// This function scores one ground truth text against one answer text.

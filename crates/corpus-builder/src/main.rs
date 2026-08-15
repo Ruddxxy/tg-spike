@@ -1,8 +1,8 @@
 //! `corpus-builder`: fetch the Telegraph daemon question feed, normalise
 //! the three weather-miner response schemas, join each observation to an
 //! Open-Meteo archive actual, cluster paraphrased questions across
-//! miners, and emit `corpus/weather-triples.jsonl` for a later scoring
-//! wave to consume.
+//! miners, and emit `corpus/weather-triples.jsonl` for `corpus-eval`
+//! to consume.
 //!
 //! This is a HOST-SIDE tool: plain std, native, no wasm, no scoring
 //! logic. Run it from the workspace root so the relative `corpus/`
@@ -358,7 +358,7 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 ///
 /// This is a MEASUREMENT ONLY: this crate does not snap a valid_time to
 /// the nearest hour anywhere. It reports what an exact-timestamp string
-/// join loses, so a later wave can decide whether that loss matters.
+/// join loses, so a reader can decide whether that loss matters.
 fn print_non_hour_boundary_diagnostic(
     records: &[emit::TripleRecord],
     actuals: &archive::ActualIndex,

@@ -13,7 +13,7 @@ use crate::rounding::{format_temp_c, round_temp_c};
 /// One (response, valid_time) observation, ready to serialise to JSONL.
 ///
 /// `gt_json` and `miner_answer` are `String`, not a nested JSON object:
-/// a later scoring wave feeds these bytes straight into
+/// the scoring tools feed these bytes straight into
 /// `rank_answer(question, ground_truth, miner_answer)`, which is
 /// consensus relevant. If this crate stored an object, every consumer
 /// would have to re-serialise it, and the re-serialisation choice (key
@@ -43,7 +43,7 @@ pub struct TripleRecord {
     /// parsed `Value`. Key order, number formatting, and spacing all
     /// match the wire bytes. This duplicates a large response across
     /// every valid_time it contains (a Zeus response holds about 72),
-    /// by design: the brief asks for one line per (response, valid_time)
+    /// by design: this crate emits one line per (response, valid_time)
     /// observation.
     pub miner_answer: String,
     pub miner_slug: String,

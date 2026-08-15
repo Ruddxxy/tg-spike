@@ -15,7 +15,7 @@
 //! sample tiny: the corpus has 40 clusters, only 7 hold more than one
 //! miner, and only 3 hold all three miners.
 //!
-//! Wave 2 already flagged the reason. The three weather miners rarely
+//! The reason is in the feed itself. The three weather miners rarely
 //! answer the same question at the same valid time, so there is very
 //! little overlap to compare on.
 //!

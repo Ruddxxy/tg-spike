@@ -1,8 +1,8 @@
 //! This module measures the value parser against real corpus text.
 //!
-//! Wave 3 tested the parser only against text the author wrote. This
-//! module runs it over the real strings in the corpus and reports what
-//! it refuses.
+//! The unit tests exercise the parser against hand-written text only.
+//! This module runs it over the real strings in the corpus and reports
+//! what it refuses.
 //!
 //! ## Three different questions
 //!

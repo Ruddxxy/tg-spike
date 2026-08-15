@@ -3,12 +3,12 @@
 //!
 //! ## Why this module exists
 //!
-//! The first version of the evaluation built its `reference` column
+//! An earlier version of the evaluation built its `reference` column
 //! from `baseline::baseline_score`, a native Rust copy of the
 //! protocol's published `word_overlap`. The copy has tests against the
-//! published source, but a reviewer is right to distrust the sentence
-//! "we reimplemented their scorer and ours beats it". The number must
-//! come from the compiled module the protocol ships.
+//! published source, but a reimplementation is not the thing it
+//! reimplements. The number must come from the compiled module the
+//! protocol ships.
 //!
 //! So this module sends every adversarial case through the SAME path
 //! the corpus columns already use: `corpus-eval` writes prepared rows,

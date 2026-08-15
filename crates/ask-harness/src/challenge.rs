@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn the_solana_leg_carries_a_fee_payer() {
         // This client does not use it, but the sponsor is recorded so a
-        // later wave can find it.
+        // later Solana payment path can find it.
         let challenge = parse_header(REAL_HEADER).expect("the real header must parse");
         let solana = challenge
             .accepts

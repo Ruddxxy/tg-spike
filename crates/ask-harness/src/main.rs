@@ -3,7 +3,7 @@
 //!
 //! ## Why this tool exists
 //!
-//! Wave 4 could not rank miners. The daemon feed records ONE miner per
+//! The daemon feed cannot rank miners. It records ONE miner per
 //! question, so there is almost no head-to-head data: 5 paraphrase
 //! clusters held more than one miner, and only 2 held all three. A
 //! flip rate on 2 items says nothing.
@@ -62,11 +62,15 @@ const DEFAULT_BUDGET_ASKS: u64 = 50;
 /// The wait between asks, so the dev node is not hammered.
 const ASK_INTERVAL: Duration = Duration::from_secs(2);
 
-/// A well known TEST key, used by `dry-run` only when no real key is
-/// set.
+/// The published go-ethereum test vector key, used by `dry-run` only
+/// when no real key is set.
 ///
-/// It holds nothing and it must never be funded. A dry run sends
-/// nothing, so a demonstration key is safe there and nowhere else.
+/// This is NOT a secret. It is the key from the go-ethereum test suite
+/// and it appears in the documentation of many Ethereum libraries. Its
+/// address is `0x2c7536e3605d9c16a7a3d7b1898e529396a65c23`, which
+/// `crates/ask-harness/src/sign.rs` asserts against. It holds nothing
+/// and it must never be funded. A dry run sends nothing, so a published
+/// key is safe there and nowhere else.
 const DEMO_KEY: &str = "0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318";
 
 fn main() {

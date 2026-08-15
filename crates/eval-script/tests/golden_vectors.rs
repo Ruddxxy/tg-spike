@@ -193,10 +193,11 @@ fn the_vector_names_are_unique() {
 
 #[test]
 fn the_json_file_matches_this_table() {
-    // The host runner and the wazero runner both read the JSON file.
-    // A drift between the file and this table would let the two hosts
-    // check different things.
-    let text = include_str!("golden_vectors.json");
+    // The host runner and the wazero runner both read the JSON file at
+    // the workspace root. This test reads that same file, not a copy,
+    // because a copy could drift and let the two hosts check different
+    // things while this test still passed.
+    let text = include_str!("../../../golden_vectors.json");
     for vector in VECTORS.iter() {
         let name_key = alloc_name_key(vector.name);
         assert!(

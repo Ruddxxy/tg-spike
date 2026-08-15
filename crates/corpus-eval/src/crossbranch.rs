@@ -1,7 +1,7 @@
 //! This module holds the cross-branch adversarial cases.
 //!
-//! The wave 3 suite attacks inside one scoring branch at a time. The
-//! stronger attack crosses branches: the miner sends something that
+//! The adversarial test suite attacks inside one scoring branch at a
+//! time. The stronger attack crosses branches: the miner sends something that
 //! makes the scorer LEAVE the numeric branch, and then farms the text
 //! branch, which has a much softer floor.
 //!
@@ -27,8 +27,8 @@ pub struct CrossBranchCase {
 
 /// This function gives every cross-branch case.
 ///
-/// The list covers the five shapes the wave 4 brief names, plus the
-/// honest reference rows that the attacks must not beat.
+/// The list covers the five cross-branch shapes, plus the honest
+/// reference rows that the attacks must not beat.
 pub fn cases() -> Vec<CrossBranchCase> {
     vec![
         // Group 1: the answer is the unit only.
@@ -192,9 +192,9 @@ pub fn print_table() {
 /// `word_overlap`. They are a fast development view. docs/EVALUATION.md
 /// publishes neither: its tables come from `adversarial-report`, which
 /// scores the SAME cases with the protocol's compiled `.wasm`. The two
-/// agree to 1e-6, and `adversarial-report` checks that on every run,
-/// but a reviewer must not have to take that on trust, so the published
-/// number is always the compiled one.
+/// agree to 1e-6, and `adversarial-report` checks that on every run.
+/// The published number is always the compiled one, so no claim in the
+/// document rests on the native copy being faithful.
 ///
 /// A number here can also differ in its last digits, because this path
 /// keeps `f64` while the ABI narrows to `f32`.

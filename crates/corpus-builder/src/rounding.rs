@@ -1,8 +1,8 @@
 //! Single source of truth for temperature rounding.
 //!
-//! The brief for this crate requires ONE rounding function, used by every
-//! ground-truth rendering and by `actual_c`, so they can never disagree
-//! with each other. All of that happens here.
+//! This crate has ONE rounding function, used by every ground-truth
+//! rendering and by `actual_c`, so they can never disagree with each
+//! other. All of that happens here.
 
 /// Round a Celsius value to one decimal place.
 ///

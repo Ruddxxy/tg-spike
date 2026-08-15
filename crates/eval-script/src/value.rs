@@ -2,13 +2,13 @@
 //!
 //! The Telegraph protocol team states that a miner answer is a single
 //! extracted value, not a JSON document. The ground truth is a single
-//! value too. The team does not tell us how either side renders that
-//! value. So this module must read many renderings of one number and
-//! must refuse to guess when a text has more than one meaning.
+//! value too. The rendering of either side is not specified. So this
+//! module must read many renderings of one number and must refuse to
+//! guess when a text has more than one meaning.
 //!
 //! ## Why this module does not use a JSON parser
 //!
-//! An earlier wave parsed both sides as JSON objects with a `label`
+//! An earlier version parsed both sides as JSON objects with a `label`
 //! field and a `confidence` field. That model is gone. Both sides are
 //! now short texts that hold one value each.
 //!

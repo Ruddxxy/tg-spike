@@ -3,7 +3,7 @@
 //! ## Why a preparation step exists
 //!
 //! The corpus stores the FULL upstream miner response for each row,
-//! because wave 2 built it as a record of what the daemon feed sent.
+//! because it is built as a record of what the daemon feed sent.
 //! The protocol does not give `rank_answer` that blob. The protocol
 //! team states that a miner answer is "a single extracted value from
 //! the miner's signal_mapping, standardized internally before it
