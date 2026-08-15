@@ -69,6 +69,11 @@ pub struct AskRecord {
     pub authorized_units: u64,
     /// A failure note, when the ask did not give an answer.
     pub failure: Option<String>,
+    /// The raw response body.
+    ///
+    /// The head-to-head step runs the corpus normaliser over this, so a
+    /// summary would lose exactly the fields it needs.
+    pub body: String,
 }
 
 impl AskRecord {
@@ -123,6 +128,7 @@ impl AskRecord {
             signal_hash: field("signal_hash"),
             authorized_units: outcome.authorized_units,
             failure,
+            body: outcome.body.clone(),
         }
     }
 
@@ -325,6 +331,7 @@ mod tests {
             } else {
                 Some("http 502".to_string())
             },
+            body: String::new(),
         }
     }
 

@@ -14,5 +14,8 @@ eval-script = { path = "../eval-script" }
 # a single extracted value. This tool must do that extraction with the
 # SAME code the corpus was built with, never a second copy.
 corpus-builder = { path = "../corpus-builder" }
+# The geocoder and the archive are plain HTTP GETs. This is the same
+# client corpus-builder uses, so the two agree on TLS and timeouts.
+ureq = { version = "2", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

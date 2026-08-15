@@ -32,12 +32,15 @@
 //! budget cap is a hard refusal, not a warning.
 
 mod ask;
+mod batch;
 mod cache;
 mod challenge;
 mod eip712;
 mod probe;
 mod sign;
 
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::time::Duration;
 
 use ask::{
@@ -74,6 +77,7 @@ fn main() {
         "dry-run" => run_dry(),
         "once" => run_once(),
         "probe" => run_probe(&arguments),
+        "batch" => run_batch(&arguments),
         _ => {
             eprintln!("usage: ask-harness <dry-run|once|probe|batch> [--budget N]");
             eprintln!();
@@ -349,6 +353,8 @@ fn read_budget(arguments: &[String]) -> Result<u64, String> {
                 .parse()
                 .map_err(|_| format!("the budget {value:?} is not a number"))?;
             index += 2;
+        } else if arguments[index] == "--plan" {
+            index += 1;
         } else {
             return Err(format!("unknown argument {:?}", arguments[index]));
         }
@@ -420,6 +426,7 @@ fn run_probe(arguments: &[String]) -> Result<(), String> {
                     signal_hash: None,
                     authorized_units: 0,
                     failure: Some(message),
+                    body: String::new(),
                 }
             }
         };
@@ -457,6 +464,217 @@ fn run_probe(arguments: &[String]) -> Result<(), String> {
         println!("Not running `batch`. The remaining budget stays unspent.");
     }
     Ok(())
+}
+
+/// Where the batch writes its plan, before it spends anything.
+///
+/// The ground-truth step geocodes from THIS file, so the coordinates
+/// come from the fixed list and never from a miner response.
+const BATCH_PLAN_PATH: &str = "corpus/batch-plan.json";
+
+/// Where the batch writes one line per ask.
+const BATCH_PATH: &str = "corpus/ask-batch.jsonl";
+
+/// This function writes the batch plan to disk.
+fn write_plan() -> Result<(), String> {
+    let cities: Vec<serde_json::Value> = batch::CITIES
+        .iter()
+        .map(|city| {
+            serde_json::json!({
+                "key": city.key,
+                "name": city.name,
+                "country": city.country,
+                "utc_offset_hours": city.utc_offset_hours,
+                "query": city.query(),
+            })
+        })
+        .collect();
+    let plan = serde_json::json!({
+        "asks_per_city": batch::ASKS_PER_CITY,
+        "total_asks": batch::total_asks(),
+        "cities": cities,
+    });
+    if let Some(parent) = std::path::Path::new(BATCH_PLAN_PATH).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot make the corpus directory: {error}"))?;
+    }
+    std::fs::write(
+        BATCH_PLAN_PATH,
+        serde_json::to_string_pretty(&plan).unwrap_or_default(),
+    )
+    .map_err(|error| format!("cannot write the plan: {error}"))?;
+    println!("plan written: {BATCH_PLAN_PATH}");
+    Ok(())
+}
+
+/// This function runs the head-to-head batch.
+///
+/// `--plan` writes the plan and spends nothing, so the ground-truth
+/// geocoding can be checked before any money moves.
+fn run_batch(arguments: &[String]) -> Result<(), String> {
+    let plan_only = arguments.iter().any(|argument| argument == "--plan");
+    let budget = read_budget(arguments)?;
+    let total = batch::total_asks();
+
+    println!("=== HEAD-TO-HEAD BATCH ===");
+    println!();
+    println!("cities:        {}", batch::CITIES.len());
+    println!("asks per city: {}", batch::ASKS_PER_CITY);
+    println!("total asks:    {total}");
+    println!("cost estimate: {:.2} USDC", (total as f64) * 0.01);
+    println!("budget:        {budget} asks");
+    println!(
+        "a city misses a 23% miner in {:.4}% of runs",
+        100.0 * batch::miss_probability(7.0 / 30.0, batch::ASKS_PER_CITY)
+    );
+    println!();
+
+    write_plan()?;
+
+    if plan_only {
+        println!();
+        println!("--plan given. NOTHING WAS SENT. NOTHING WAS SPENT.");
+        return Ok(());
+    }
+
+    if (total as u64) > budget {
+        return Err(format!(
+            "the batch needs {total} asks but the budget is {budget}. \
+             Raise it with --budget {total} if that is what you want."
+        ));
+    }
+
+    let (signer, _) = load_signer(false)?;
+    println!("payer address: {}", to_hex(&signer.address()));
+    println!();
+
+    let path = std::path::Path::new(BATCH_PATH);
+    let mut file = std::fs::File::create(path)
+        .map_err(|error| format!("cannot make the batch file: {error}"))?;
+
+    let mut index = 0usize;
+    let mut settled_units = 0u64;
+    let mut failures = 0usize;
+
+    for city in &batch::CITIES {
+        let query = city.query();
+        println!("--- {} ({}) ---", city.name, city.key);
+        let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+
+        for _ in 0..batch::ASKS_PER_CITY {
+            index += 1;
+            if index > 1 {
+                std::thread::sleep(ASK_INTERVAL);
+            }
+
+            // The ask time is stamped HERE, on the client, before the
+            // response exists. The ground-truth join uses this, never a
+            // timestamp out of a miner response.
+            let asked_at = unix_seconds()?;
+
+            let record = match ask_once(&signer, &query, index) {
+                Ok(outcome) => {
+                    if matches!(&outcome.settlement, Some(Ok(s)) if s.success == Some(true)) {
+                        settled_units = settled_units.saturating_add(outcome.authorized_units);
+                    }
+                    probe::AskRecord::from_outcome(index, &outcome)
+                }
+                Err(message) => {
+                    println!("  ask {index}: {message}");
+                    probe::AskRecord {
+                        index,
+                        status: 0,
+                        settled: false,
+                        transaction: None,
+                        miner_id: None,
+                        miner_name: None,
+                        intent: None,
+                        cost_usd: None,
+                        signal_hash: None,
+                        authorized_units: 0,
+                        failure: Some(message),
+                        body: String::new(),
+                    }
+                }
+            };
+
+            if record.failure.is_some() {
+                failures += 1;
+            } else if let Some(id) = &record.miner_id {
+                *seen.entry(id.clone()).or_insert(0) += 1;
+            }
+
+            // The raw body is kept, because the ground-truth step runs
+            // the corpus normaliser over it and a summary would lose
+            // the fields that needs.
+            let body = record_body(&record, &query, city, asked_at);
+            writeln!(file, "{body}")
+                .map_err(|error| format!("cannot write the batch file: {error}"))?;
+        }
+
+        let names: Vec<String> = seen
+            .iter()
+            .map(|(id, count)| format!("{id}x{count}"))
+            .collect();
+        println!(
+            "  {} distinct miners: {}",
+            seen.len(),
+            if names.is_empty() {
+                "none".to_string()
+            } else {
+                names.join(" ")
+            }
+        );
+    }
+
+    println!();
+    println!("asks sent:     {index}");
+    println!("failed:        {failures}");
+    println!(
+        "settled spend: {settled_units} smallest units ({:.2} USDC)",
+        (settled_units as f64) / 1_000_000.0
+    );
+    println!("written:       {BATCH_PATH}");
+    println!();
+    println!("Now join ground truth:");
+    println!("  cargo run -p corpus-eval --release -- headtohead");
+    Ok(())
+}
+
+/// This function gives the current time in Unix seconds.
+fn unix_seconds() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "the system clock is before the epoch".to_string())
+        .map(|value| value.as_secs())
+}
+
+/// This function renders one batch line.
+fn record_body(
+    record: &probe::AskRecord,
+    query: &str,
+    city: &batch::City,
+    asked_at: u64,
+) -> String {
+    serde_json::json!({
+        "index": record.index,
+        "city_key": city.key,
+        "city_name": city.name,
+        "city_country": city.country,
+        "query": query,
+        "asked_at_unix": asked_at,
+        "status": record.status,
+        "settled": record.settled,
+        "transaction": record.transaction,
+        "miner_id": record.miner_id,
+        "miner_name": record.miner_name,
+        "intent": record.intent,
+        "cost_usd": record.cost_usd,
+        "signal_hash": record.signal_hash,
+        "failure": record.failure,
+        "body": record.body,
+    })
+    .to_string()
 }
 
 /// This function runs one paid ask end to end.

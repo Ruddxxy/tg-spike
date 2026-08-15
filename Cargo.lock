@@ -274,6 +274,7 @@ dependencies = [
  "eval-script",
  "serde",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

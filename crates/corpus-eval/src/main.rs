@@ -15,6 +15,9 @@ mod bootstrap;
 mod corpus;
 mod coverage;
 mod crossbranch;
+mod geocode;
+mod h2hreport;
+mod headtohead;
 mod knownbad;
 mod ranking;
 mod stats;
@@ -49,6 +52,35 @@ fn main() {
                     eprintln!("cannot read the adversarial scores: {error}");
                     std::process::exit(1);
                 }
+            }
+        }
+        "geocode" => {
+            let plan_path = std::path::Path::new("corpus/batch-plan.json");
+            let coords_path = std::path::Path::new(geocode::COORDS_PATH);
+            println!("=== GEOCODING THE BATCH CITY LIST ===");
+            println!("coordinates come from this list, never from a miner response");
+            println!();
+            match geocode::load_plan(plan_path)
+                .and_then(|plan| geocode::resolve_plan(&plan, coords_path))
+            {
+                Ok(coords) => {
+                    println!();
+                    println!(
+                        "{} cities resolved -> {}",
+                        coords.len(),
+                        geocode::COORDS_PATH
+                    );
+                }
+                Err(error) => {
+                    eprintln!("geocoding failed: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "headtohead" => {
+            if let Err(error) = run_head_to_head() {
+                eprintln!("head-to-head failed: {error}");
+                std::process::exit(1);
             }
         }
         "crossbranch" => crossbranch::print_table(),
@@ -125,7 +157,13 @@ fn main() {
             }
         }
         "rankflip" => {
-            let path = std::path::Path::new("corpus/eval-scores.jsonl");
+            // An optional path, so the same reduction runs over the
+            // head-to-head scores without a second code path.
+            let path_arg = args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "corpus/eval-scores.jsonl".to_string());
+            let path = std::path::Path::new(&path_arg);
             match stats::load_scores(path) {
                 Ok(rows) => ranking::print_rank_flips(&rows, 2000, 20260814),
                 Err(error) => {
@@ -135,7 +173,13 @@ fn main() {
             }
         }
         "stats" => {
-            let path = std::path::Path::new("corpus/eval-scores.jsonl");
+            // An optional path, so the same reduction runs over the
+            // head-to-head scores without a second code path.
+            let path_arg = args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "corpus/eval-scores.jsonl".to_string());
+            let path = std::path::Path::new(&path_arg);
             match stats::load_scores(path) {
                 Ok(rows) => {
                     stats::print_rendering_variance(&rows);
@@ -149,8 +193,18 @@ fn main() {
             }
         }
         "prepare" => {
-            let input = std::path::Path::new("corpus/weather-triples.jsonl");
-            let output = std::path::Path::new("corpus/eval-input.jsonl");
+            // Optional paths, so the same preparation runs over the
+            // head-to-head corpus without a second code path.
+            let input_arg = args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "corpus/weather-triples.jsonl".to_string());
+            let output_arg = args
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| "corpus/eval-input.jsonl".to_string());
+            let input = std::path::Path::new(&input_arg);
+            let output = std::path::Path::new(&output_arg);
             match corpus::prepare(input, output) {
                 Ok(report) => {
                     println!("rows read:           {}", report.rows_read);
@@ -171,9 +225,58 @@ fn main() {
         _ => {
             eprintln!(
                 "usage: corpus-eval <crossbranch|renderings|separation|prepare|stats|parsecov|\
-                 rankflip|knownbad|adversarial-emit|adversarial-report>"
+                 rankflip|knownbad|adversarial-emit|adversarial-report|geocode|headtohead>"
             );
             std::process::exit(2);
         }
     }
+}
+
+/// This function joins ground truth onto the bought asks and reports.
+///
+/// The truth comes from the geocoded city list and the client-side ask
+/// time. No coordinate and no timestamp used for the join comes out of
+/// a miner response.
+fn run_head_to_head() -> Result<(), String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let asks = headtohead::load_asks(std::path::Path::new("corpus/ask-batch.jsonl"))?;
+    let coordinates = geocode::load_coordinates(std::path::Path::new(geocode::COORDS_PATH))?;
+
+    println!("=== HEAD-TO-HEAD GROUND TRUTH JOIN ===");
+    println!("asks read:   {}", asks.len());
+    println!("cities:      {}", coordinates.len());
+
+    let (start, end) = headtohead::date_span(&asks);
+    println!("archive span {start} to {end}");
+    println!();
+
+    let mut archives = BTreeMap::new();
+    for key in headtohead::city_keys(&asks) {
+        let Some(place) = coordinates.get(&key) else {
+            println!("  {key:<12} NOT GEOCODED, skipped");
+            continue;
+        };
+        match headtohead::fetch_archive(place.latitude, place.longitude, &start, &end) {
+            Ok(series) => {
+                println!("  {key:<12} archive fetched");
+                archives.insert(key, series);
+            }
+            Err(error) => println!("  {key:<12} archive FAILED: {error}"),
+        }
+    }
+
+    let mut drops = headtohead::DropCounts::default();
+    let rows = headtohead::join(&asks, &coordinates, &archives, &mut drops);
+
+    let output = std::path::Path::new(headtohead::OUTPUT_PATH);
+    headtohead::write_rows(&rows, output)?;
+    println!();
+    println!("rows written: {} -> {}", rows.len(), output.display());
+
+    let settled_units: u64 = asks.iter().filter(|ask| ask.settled).count() as u64 * 10_000;
+    let observed: BTreeSet<String> = asks.iter().filter_map(|ask| ask.miner_id.clone()).collect();
+
+    h2hreport::print_report(&rows, 20, 7.0 / 30.0, &drops, settled_units, &observed);
+    Ok(())
 }
