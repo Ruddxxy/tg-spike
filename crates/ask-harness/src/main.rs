@@ -35,6 +35,7 @@ mod ask;
 mod cache;
 mod challenge;
 mod eip712;
+mod probe;
 mod sign;
 
 use std::time::Duration;
@@ -72,6 +73,7 @@ fn main() {
     let outcome = match command {
         "dry-run" => run_dry(),
         "once" => run_once(),
+        "probe" => run_probe(&arguments),
         _ => {
             eprintln!("usage: ask-harness <dry-run|once|probe|batch> [--budget N]");
             eprintln!();
@@ -323,13 +325,156 @@ fn elide(value: &str) -> String {
     format!("{}...{}", &value[..HEAD], &value[value.len() - 8..])
 }
 
-/// This constant records the budget default for a reader.
+/// How many asks the routing probe sends.
 ///
-/// The batch path is not built yet. It stays behind the `probe` gate,
-/// which decides whether head-to-head data is obtainable at all.
-#[allow(dead_code)]
-const BUDGET_NOTE: u64 = DEFAULT_BUDGET_ASKS;
+/// Enough to see a distribution, and not more. The point is to learn
+/// whether a fixed query reaches more than one miner, which a few tens
+/// of asks answers. Asking beyond that would buy no extra information
+/// and would put traffic on the network for no research reason.
+const PROBE_ASKS: usize = 30;
 
-/// This constant records the ask interval for a reader.
-#[allow(dead_code)]
-const INTERVAL_NOTE: Duration = ASK_INTERVAL;
+/// This function reads the `--budget N` argument.
+///
+/// The budget is a HARD cap in asks, checked before the first one. It
+/// refuses rather than warns.
+fn read_budget(arguments: &[String]) -> Result<u64, String> {
+    let mut budget = DEFAULT_BUDGET_ASKS;
+    let mut index = 2;
+    while index < arguments.len() {
+        if arguments[index] == "--budget" {
+            let value = arguments
+                .get(index + 1)
+                .ok_or_else(|| "--budget needs a number".to_string())?;
+            budget = value
+                .parse()
+                .map_err(|_| format!("the budget {value:?} is not a number"))?;
+            index += 2;
+        } else {
+            return Err(format!("unknown argument {:?}", arguments[index]));
+        }
+    }
+    Ok(budget)
+}
+
+/// This function runs the routing distribution probe.
+///
+/// The probe asks ONE fixed question many times and records which
+/// miner answered each. See `probe.rs` for why this is a gate rather
+/// than a result.
+fn run_probe(arguments: &[String]) -> Result<(), String> {
+    let budget = read_budget(arguments)?;
+    if (PROBE_ASKS as u64) > budget {
+        return Err(format!(
+            "the probe needs {PROBE_ASKS} asks but the budget is {budget}. \
+             Raise it with --budget {PROBE_ASKS} if that is what you want."
+        ));
+    }
+
+    println!("=== ROUTING PROBE: {PROBE_ASKS} REAL ASKS ===");
+    println!();
+
+    let (signer, _) = load_signer(false)?;
+    println!("payer address: {}", to_hex(&signer.address()));
+
+    // A weather query, so any head-to-head rows this produces score
+    // against the same archive ground truth the corpus already uses.
+    let query = "What is the current weather in Tokyo?";
+    println!("query:         {query:?}");
+    println!("budget:        {budget} asks");
+    println!(
+        "cost estimate: {PROBE_ASKS} asks at 0.01 USDC = {:.2} USDC",
+        (PROBE_ASKS as f64) * 0.01
+    );
+    println!(
+        "rate:          one ask every {} seconds",
+        ASK_INTERVAL.as_secs()
+    );
+    println!();
+    println!(
+        "{:>3} {:>6} {:>10} {:<22} {:<18} {:>8}",
+        "#", "status", "miner_id", "miner", "intent", "settled"
+    );
+
+    let mut records = Vec::with_capacity(PROBE_ASKS);
+    for index in 1..=PROBE_ASKS {
+        if index > 1 {
+            std::thread::sleep(ASK_INTERVAL);
+        }
+
+        let record = match ask_once(&signer, query, index) {
+            Ok(outcome) => probe::AskRecord::from_outcome(index, &outcome),
+            Err(message) => {
+                // A transport or signing failure is recorded and the
+                // run continues. Stopping would lose the asks already
+                // paid for.
+                println!("{index:>3} {:>6} {message}", "-");
+                probe::AskRecord {
+                    index,
+                    status: 0,
+                    settled: false,
+                    transaction: None,
+                    miner_id: None,
+                    miner_name: None,
+                    intent: None,
+                    cost_usd: None,
+                    signal_hash: None,
+                    authorized_units: 0,
+                    failure: Some(message),
+                }
+            }
+        };
+
+        if record.failure.is_none() {
+            println!(
+                "{:>3} {:>6} {:>10} {:<22} {:<18} {:>8}",
+                record.index,
+                record.status,
+                record.miner_id.as_deref().unwrap_or("-"),
+                record.miner_name.as_deref().unwrap_or("-"),
+                record.intent.as_deref().unwrap_or("-"),
+                if record.settled { "yes" } else { "NO" }
+            );
+        } else if record.status != 0 {
+            println!(
+                "{:>3} {:>6} {}",
+                record.index,
+                record.status,
+                record.failure.as_deref().unwrap_or("failed")
+            );
+        }
+
+        records.push(record);
+    }
+
+    let report = probe::summarise(&records);
+    let path = probe::write_records(&records, query)?;
+    let gate_open = probe::print_report(&report, PROBE_ASKS, &path);
+
+    if !gate_open {
+        // A closed gate is a real finding, not an error. It is reported
+        // and the process still exits 0, because nothing went wrong.
+        println!();
+        println!("Not running `batch`. The remaining budget stays unspent.");
+    }
+    Ok(())
+}
+
+/// This function runs one paid ask end to end.
+///
+/// The nonce seed carries the ask index, so two asks inside the same
+/// second cannot build the same authorisation nonce. A repeated nonce
+/// is a replay to the token contract and the second ask would be
+/// refused.
+fn ask_once(signer: &Signer, query: &str, index: usize) -> Result<AskOutcome, String> {
+    let challenge = fetch_challenge(ENDPOINT, query)?;
+    let leg_index = challenge
+        .eip155_leg_index(ALLOWED_CHAIN_ID)
+        .ok_or_else(|| format!("the node offers no eip155:{ALLOWED_CHAIN_ID} leg"))?;
+
+    let mut seed = Vec::with_capacity(query.len() + 8);
+    seed.extend_from_slice(query.as_bytes());
+    seed.extend_from_slice(&(index as u64).to_be_bytes());
+
+    let payment = prepare_payment(&challenge, leg_index, signer, &seed)?;
+    send_paid_ask(ENDPOINT, query, &payment)
+}
