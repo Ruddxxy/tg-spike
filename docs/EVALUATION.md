@@ -182,9 +182,10 @@ whether or not the correlation means anything.
 that our scorer measures accuracy well. Establishing that needs ground
 truth that does not derive from the miner's own answer — in particular
 a truth joined at the question's location and time rather than at the
-coordinates the miner returned. Building that is the ask-harness work
-in Wave 5, and **it is not done**. Until it is, treat 0.9001 as a
-consistency check, not as an accuracy result.
+coordinates the miner returned. **Section 3 now has that**, on 200
+bought asks with an independently geocoded truth. Read the accuracy
+claim there, not here. Treat 0.9001 as a consistency check on this
+corpus, not as an accuracy result.
 
 Per-miner accuracy and score:
 
@@ -262,9 +263,12 @@ wrong-location one never reaches the module.
 Two things would change that, and both sit outside the scoring module.
 The request parameters could be added to the ABI, which is the core
 team's call. Or the truth pipeline could resolve the location from the
-question independently of the answer, which is a corpus change and is
-what the Wave 5 ask-harness is built to do. It is not done, so this
-document claims nothing on that front.
+question independently of the answer, which is a corpus change rather
+than a scoring change. **Section 3 does the second.** Its truth is
+geocoded from the question's own city list and joined at the ask
+timestamp, so a wrong-location answer would be caught there. No
+wrong-location answer occurred in that set, so the guard is in place
+but has not yet been tested by a real failure.
 
 ```
 cargo run -p corpus-eval --release -- knownbad
@@ -272,39 +276,159 @@ cargo run -p corpus-eval --release -- knownbad
 
 ---
 
-## 3. Ranking stability: not measurable on this corpus
+## 3. Ranking stability, on bought head-to-head data
 
-**No ranking result is published here, because the data cannot support
-one.**
+The daemon feed cannot rank miners. It routes one miner per question,
+so paired comparisons had to be reconstructed from paraphrase clusters
+and only 2 survived into the scored set. A flip rate on 2 items is a
+coin toss.
 
-Ranking miners requires head-to-head data: the same question, at the
-same valid time, answered by more than one miner. The Telegraph daemon
-feed does not produce it. The protocol routes each question to one
-miner, so the feed records exactly one answer per question and there is
-nothing to compare directly. Paired comparisons had to be reconstructed
-after the fact from paraphrase clusters — groups of questions that ask
-the same thing in different words at the same valid time.
+So the data was bought instead. 200 paid asks over the Engine's
+auto-routed endpoint, 10 cities, 20 asks per city, one fixed query
+string per city. **200 of 200 answered, zero failures, 10 of 10 cities
+paired.** Cost 2.00 USDC on Base Sepolia testnet, every ask settled
+on-chain and individually logged.
 
-That reconstruction yields almost nothing. The corpus holds 40
-clusters. 7 hold more than one miner. 5 of those survive into the
-scored set, and only 2 are answered by all three miners. A bootstrap
-flip rate computed on 2 items is a coin toss, and reporting it to one
-decimal place would give it a precision it does not have.
+A pair here is strict: **2 or more DISTINCT miners answered the SAME
+query string.** Twenty answers from one miner is not a pair; it is
+twenty samples of one miner and it ranks nothing.
 
-This is a property of the routing, not of either scorer, and both
-scorers face it equally. **It is worth reporting to the core team on
-its own account**: a network whose feed is a single-miner-per-question
-log cannot be used to compare miners retrospectively, however good the
-scoring module is. Comparative evaluation needs either a feed that
-records the losing candidates, or a client that asks the same question
-repeatedly and lets routing spread it. The Wave 5 ask-harness targets
-the second; it has not produced data yet.
+### 3.1 The ground truth is independent of the answer
 
-The method itself is implemented and tested in
-`crates/corpus-eval/src/bootstrap.rs` — paired resampling with a fixed
-seed, one shared index set per round. It is correct and it becomes
-usable the moment real head-to-head data exists. It is simply not run
-against n = 2.
+This is the part that matters, and it is what section 2.4 says the
+corpus could not do.
+
+The city list is fixed in the batch plan. Each city is geocoded ONCE
+through Open-Meteo, and the geocoder must return the country that was
+asked for rather than the first hit — the check that would have caught
+wave 2 sending "Maringá PR Brazil" to Brazil, Indiana. The archive is
+then joined **at those coordinates and at the hour nearest the ask
+timestamp, which is stamped client-side before the request is sent.**
+
+No coordinate and no join timestamp comes from a miner response. A
+miner that answered for the wrong city would now be scored against the
+right city's weather and the error would show.
+
+### 3.2 Per-miner accuracy
+
+| miner          |   n | mean \|e\| | median \|e\| | mean signed e | worst |
+| -------------- | --: | ---------: | -----------: | ------------: | ----: |
+| OpenWeatherMap | 123 |  **1.108** |        1.060 |        +0.536 |  2.09 |
+| WeatherAPI     |  77 |  **2.244** |        2.500 |        -0.821 |  5.80 |
+
+Error is in Celsius against the archive actual at the geocoded city and
+the ask hour. OpenWeatherMap is about twice as accurate, running
+slightly warm; WeatherAPI runs cold.
+
+### 3.3 The scorers, against that accuracy
+
+| scorer    | OpenWeatherMap | WeatherAPI | ranks them correctly? |
+| --------- | -------------: | ---------: | --------------------- |
+| ours      |     **0.3792** | **0.2455** | yes                   |
+| reference |       0.000000 |   0.000000 | no — it cannot rank   |
+
+Our score puts OpenWeatherMap above WeatherAPI, which is the order the
+independent accuracy measurement gives. The reference assigns
+**0.000000 to both**, on all 200 rows, under all three ground-truth
+renderings.
+
+That has a consequence worth stating plainly. Correlation between score
+and negative absolute error, on this set:
+
+| miner          |   n |   ours | reference |
+| -------------- | --: | -----: | --------: |
+| OpenWeatherMap | 123 | 0.8631 |   **NaN** |
+| WeatherAPI     |  77 | 0.6880 |   **NaN** |
+| **all pooled** | 200 | 0.6789 |   **NaN** |
+
+The reference's correlation is `NaN`. It is not a low number; there is
+no number. A correlation divides by the standard deviation of each
+series, and a scorer that emits the same constant for every input has a
+standard deviation of zero. **There is nothing to correlate.** That is
+the clearest single statement of the problem this submission fixes.
+
+### 3.4 Ranking stability
+
+Bootstrap rank-flip over the 10 paired clusters, 2000 resamples, fixed
+seed, one shared index set per round:
+
+| scorer    | rank 1 vs 2 flip rate |
+| --------- | --------------------: |
+| ours      |                 19.9% |
+| reference |                  0.0% |
+
+**n = 10 clusters is small.** A 19.9% flip rate means the ordering
+holds in about four resamples out of five, which is suggestive and not
+settled. It is five times the evidence wave 4 had, and it is still not
+enough to publish a miner ranking. The reference's 0.0% is not
+stability: two miners tied at exactly 0.000000 never swap because
+neither ever moves.
+
+### 3.5 Two things this does not claim
+
+**"Accuracy" here means agreement with Open-Meteo, which is a
+reanalysis model, not station observations.** WeatherAPI is
+station-derived. A methodology gap between a model and a station
+network would systematically favour whichever miner is closer to
+Open-Meteo's own model, and that miner is not necessarily the more
+accurate one in the world. The gap is largest at Dubai, where
+WeatherAPI reported 35.5 C against an archive actual of 41.3 C.
+
+To check whether those gaps were location errors rather than
+measurement differences, the coordinates WeatherAPI returned were read
+back for its three worst cities — Dubai, Singapore and Nairobi — and
+**all three were correct**. These are genuine measurement
+disagreements. (Reading a miner's coordinates for that check is
+diagnosis; it never feeds the ground-truth join.)
+
+**The correlation remains structurally circular.** The score is a
+monotonic function of the same difference the correlation measures, so
+a high value is close to arithmetically guaranteed, exactly as section
+2.3 states. What changed is not the correlation but the error
+measurement underneath it: the truth is now independent of the miner's
+claimed location and time, so the per-miner error figures in 3.2 can be
+trusted in a way wave 2's could not. The correlation is not new
+evidence.
+
+### 3.6 A routing finding that bounds every Track 2 submission
+
+The node's registry lists 4 miners as active for `WEATHER_CHECK` and 5
+for `WEATHER_FORECAST`. Across 200 auto-routed asks, **3 of the 5 were
+served zero requests**:
+
+| miner_id | name                   | asks of 200 |
+| -------- | ---------------------- | ----------: |
+| 211      | OpenWeatherMap         |         123 |
+| 212      | WeatherAPI             |          77 |
+| 18       | Zeus (Bittensor SN18)  |       **0** |
+| 0        | Lacre-Meteo            |       **0** |
+| 64173    | OathCast Weather       |       **0** |
+
+The router selects from a narrower set than the registry advertises.
+This is not a scoring question, but it bounds what any Track 2
+evaluation can claim: **a submission can only be shown to rank the
+miners the router actually reaches.** A two-miner comparison is the
+most this network currently permits through the auto-routed endpoint,
+whatever the registry says. Diagnosing why would mean calling
+`/engine/v1/ask/{miner_id}` directly, which targets a named miner and
+is out of bounds under hackathon rule 04.
+
+```
+cargo run -p ask-harness -- batch --plan     # writes the city list, spends nothing
+cargo run -p corpus-eval --release -- geocode
+cargo run -p ask-harness -- batch --budget 300
+cargo run -p corpus-eval --release -- headtohead
+cargo run -p corpus-eval --release -- prepare corpus/head-to-head.jsonl corpus/h2h-input.jsonl
+(cd tools/wazero-runner && go run . -corpus ../../corpus/h2h-input.jsonl \
+   -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+   -b ../../reference/scoring_module.wasm -out ../../corpus/h2h-scores.jsonl)
+cargo run -p corpus-eval --release -- stats corpus/h2h-scores.jsonl
+cargo run -p corpus-eval --release -- rankflip corpus/h2h-scores.jsonl
+```
+
+The head-to-head corpus is emitted in the same shape as the daemon-feed
+corpus, so `prepare` consumes it unchanged: 200 rows read, 200 written,
+no drops.
 
 ---
 
@@ -524,6 +648,20 @@ cargo run -p corpus-eval --release -- adversarial-emit
    -out ../../corpus/adversarial-scores.jsonl)
 cargo run -p corpus-eval --release -- adversarial-report
 
+# the head-to-head set, section 3. This SPENDS 2.00 testnet USDC.
+cargo run -p ask-harness -- batch --plan          # city list, spends nothing
+cargo run -p corpus-eval --release -- geocode     # truth coordinates, free
+cargo run -p ask-harness -- batch --budget 300
+cargo run -p corpus-eval --release -- headtohead
+cargo run -p corpus-eval --release -- prepare \
+   corpus/head-to-head.jsonl corpus/h2h-input.jsonl
+(cd tools/wazero-runner && go run . -corpus ../../corpus/h2h-input.jsonl \
+   -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+   -b ../../reference/scoring_module.wasm \
+   -out ../../corpus/h2h-scores.jsonl)
+cargo run -p corpus-eval --release -- stats corpus/h2h-scores.jsonl
+cargo run -p corpus-eval --release -- rankflip corpus/h2h-scores.jsonl
+
 # verification
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
@@ -538,9 +676,10 @@ every HTTP response, so a rerun makes zero network requests.
 
 ## 7. What this evaluation does not show
 
-- **It does not show that our scorer ranks miners better.** The
-  multi-miner comparison set is 2 to 5 clusters, so no ranking result
-  is reported at all. See section 3.
+- **It does not settle a miner ranking.** Section 3 ranks two miners
+  on 10 paired clusters with a 19.9% bootstrap flip rate. That is
+  suggestive, not settled, and it covers only the 2 miners the router
+  actually reached out of 5 registered active.
 - **It does not show that wrong-location or wrong-time answers are
   caught.** Zero of five known-bad groups were caught, and one scored
   above the corpus mean. See section 2.4 for why no value-comparing
@@ -554,4 +693,9 @@ every HTTP response, so a rerun makes zero network requests.
 - **`TOLERANCE = 0.03` was chosen to produce 0.900 at 1% error.** No
   protocol document justifies that value. A different intent needs a
   different one, and the constant exists to make that a one-line change.
-- **The corpus is one snapshot** of the daemon feed taken in August 2026. It is not a continuing sample.
+- **"Accuracy" in section 3 means agreement with Open-Meteo**, a
+  reanalysis model, not station observations. The methodology gap may
+  systematically favour whichever miner is closer to that model.
+- **The corpus is one snapshot** of the daemon feed taken in August
+  2026, and the head-to-head set is one 28-minute window on 15 August
+  2026. Neither is a continuing sample.
