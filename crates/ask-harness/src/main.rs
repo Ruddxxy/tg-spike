@@ -39,7 +39,10 @@ mod sign;
 
 use std::time::Duration;
 
-use ask::{fetch_challenge, prepare_payment, send_paid_ask, ALLOWED_CHAIN_ID, PAYMENT_HEADER};
+use ask::{
+    fetch_challenge, prepare_payment, send_paid_ask, AskOutcome, Settlement, ALLOWED_CHAIN_ID,
+    PAYMENT_HEADER, SETTLEMENT_HEADER,
+};
 use eip712::to_hex;
 use sign::Signer;
 
@@ -143,23 +146,23 @@ fn run_dry() -> Result<(), String> {
     println!("payer address: {}", to_hex(&signer.address()));
     println!();
 
-    let question = "What is the weather in Tokyo?";
-    let intent = "WEATHER_CHECK";
-    println!("question: {question:?}");
-    println!("intent:   {intent}");
+    let query = "What is the weather in Tokyo?";
+    println!("query: {query:?}");
+    println!("  the Engine's router classifies the intent; the client");
+    println!("  does not name a miner and does not name an intent.");
     println!();
 
     println!("--- the live challenge ---");
-    let challenge = fetch_challenge(ENDPOINT, question, intent)?;
+    let challenge = fetch_challenge(ENDPOINT, query)?;
     print_challenge(&challenge);
     println!();
 
-    let leg = challenge
-        .eip155_leg(ALLOWED_CHAIN_ID)
+    let leg_index = challenge
+        .eip155_leg_index(ALLOWED_CHAIN_ID)
         .ok_or_else(|| format!("the node offers no eip155:{ALLOWED_CHAIN_ID} leg"))?;
 
     println!("--- the signed payment ---");
-    let payment = prepare_payment(leg, &signer, question.as_bytes())?;
+    let payment = prepare_payment(&challenge, leg_index, &signer, query.as_bytes())?;
     println!("domain separator: {}", to_hex(&payment.domain_separator));
     println!("  this value is checked against the deployed contract by");
     println!("  the_base_sepolia_usdc_domain_matches_the_deployed_contract");
@@ -173,8 +176,76 @@ fn run_dry() -> Result<(), String> {
     println!("{PAYMENT_HEADER} would carry:");
     println!("  {}", payment.header_value);
     println!();
+    println!("which decodes to:");
+    println!("{}", decoded_envelope(&payment.header_value));
+    println!();
     println!("NOTHING WAS SENT. NOTHING WAS SPENT.");
     Ok(())
+}
+
+/// This function decodes a payment header back to readable JSON.
+///
+/// A dry run that prints only base64 hides exactly the thing that was
+/// wrong before: the envelope shape.
+fn decoded_envelope(header_value: &str) -> String {
+    let Some(bytes) = challenge::base64_decode(header_value) else {
+        return "  (the header is not valid base64)".to_string();
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return "  (the payload is not valid UTF-8)".to_string();
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or(text),
+        Err(_) => text,
+    }
+}
+
+/// This function prints the settlement result of a paid ask.
+///
+/// The function prints on BOTH paths. A failed settlement states its
+/// reason here, and that reason is the whole point of reading the
+/// header.
+fn print_settlement(outcome: &AskOutcome) {
+    println!();
+    println!("--- {SETTLEMENT_HEADER} ---");
+    match &outcome.settlement {
+        None => {
+            println!("the node sent no {SETTLEMENT_HEADER} header.");
+            println!("so it did not reach settlement; the reason is in the body above.");
+        }
+        Some(Err(error)) => {
+            println!("the header was present but could not be read: {error}");
+        }
+        Some(Ok(settlement)) => {
+            print_settlement_fields(settlement);
+        }
+    }
+}
+
+/// This function prints the fields of a decoded settlement.
+fn print_settlement_fields(settlement: &Settlement) {
+    match settlement.success {
+        Some(true) => println!("success:     yes, the node settled the payment"),
+        Some(false) => println!("success:     NO, the node refused the payment"),
+        None => println!("success:     not stated"),
+    }
+    if let Some(reason) = &settlement.error_reason {
+        println!("reason:      {reason}");
+    }
+    if let Some(transaction) = &settlement.transaction {
+        println!("transaction: {transaction}");
+    }
+    if let Some(network) = &settlement.network {
+        println!("network:     {network}");
+    }
+    if let Some(payer) = &settlement.payer {
+        println!("payer:       {payer}");
+    }
+    println!("raw:");
+    match serde_json::to_string_pretty(&settlement.raw) {
+        Ok(text) => println!("{text}"),
+        Err(_) => println!("{}", settlement.raw),
+    }
 }
 
 /// This function runs exactly ONE paid ask, then stops.
@@ -185,30 +256,71 @@ fn run_once() -> Result<(), String> {
     let (signer, _) = load_signer(false)?;
     println!("payer address: {}", to_hex(&signer.address()));
 
-    let question = "What is the weather in Tokyo?";
-    let intent = "WEATHER_CHECK";
+    let query = "What is the weather in Tokyo?";
 
-    let challenge = fetch_challenge(ENDPOINT, question, intent)?;
-    let leg = challenge
-        .eip155_leg(ALLOWED_CHAIN_ID)
+    let challenge = fetch_challenge(ENDPOINT, query)?;
+    let leg_index = challenge
+        .eip155_leg_index(ALLOWED_CHAIN_ID)
         .ok_or_else(|| format!("the node offers no eip155:{ALLOWED_CHAIN_ID} leg"))?;
-    let payment = prepare_payment(leg, &signer, question.as_bytes())?;
+    let payment = prepare_payment(&challenge, leg_index, &signer, query.as_bytes())?;
 
-    println!("spending {} smallest units on one ask", payment.value);
-    let outcome = send_paid_ask(ENDPOINT, question, intent, &payment)?;
+    println!("authorising {} smallest units for one ask", payment.value);
+    println!();
+    println!("--- request headers sent ---");
+    println!("POST {ENDPOINT}");
+    println!("Content-Type: application/json");
+    println!(
+        "{PAYMENT_HEADER}: {} ({} base64 characters)",
+        elide(&payment.header_value),
+        payment.header_value.len()
+    );
+    println!();
+    println!("the payload decodes to:");
+    println!("{}", decoded_envelope(&payment.header_value));
 
+    let outcome = send_paid_ask(ENDPOINT, query, &payment)?;
+
+    println!();
+    println!("--- response ---");
     println!("status: {}", outcome.status);
     println!("body:");
     println!("{}", outcome.body);
 
-    cache::store("once", question, &outcome.body)?;
+    print_settlement(&outcome);
+
+    cache::store("once", query, &outcome.body)?;
+
     println!();
-    println!(
-        "total spent: {} smallest units (1 ask)",
-        outcome.spent_units
+    let settled = matches!(
+        &outcome.settlement,
+        Some(Ok(settlement)) if settlement.success == Some(true)
     );
-    println!("STOPPING. Check the response, then run `probe`.");
+    if settled {
+        println!(
+            "SPENT: {} smallest units on 1 ask",
+            outcome.authorized_units
+        );
+        println!("STOPPING. Check the answer, then run `probe`.");
+    } else {
+        println!(
+            "SPENT: 0. {} smallest units were authorised but not settled.",
+            outcome.authorized_units
+        );
+        println!("STOPPING. Fix the reason above before sending another ask.");
+    }
     Ok(())
+}
+
+/// This function shortens a long header value for the console.
+///
+/// The full value is printed in decoded form directly below it, so the
+/// elided form is enough to confirm what was sent.
+fn elide(value: &str) -> String {
+    const HEAD: usize = 24;
+    if value.len() <= HEAD * 2 {
+        return value.to_string();
+    }
+    format!("{}...{}", &value[..HEAD], &value[value.len() - 8..])
 }
 
 /// This constant records the budget default for a reader.

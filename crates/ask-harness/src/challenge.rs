@@ -22,6 +22,16 @@ pub struct Challenge {
     pub error: String,
     /// The payment legs the node accepts.
     pub accepts: Vec<Accept>,
+    /// The challenge exactly as it arrived, before any typing.
+    ///
+    /// The v2 payment payload echoes the `resource` object and the
+    /// CHOSEN leg back to the node. Echoing the raw JSON rather than
+    /// re-serialising the typed struct means a field this client does
+    /// not model still reaches the node unchanged. A dropped field is
+    /// a rejected payment, and the node is the authority on its own
+    /// challenge.
+    #[serde(skip)]
+    pub raw: serde_json::Value,
 }
 
 /// One payment leg.
@@ -70,11 +80,43 @@ impl Challenge {
     ///
     /// The function matches on the CAIP-2 name, so it cannot pick a
     /// leg for a different chain by accident.
+    ///
+    /// The paying path uses [`Challenge::eip155_leg_index`] instead,
+    /// because it also needs the raw JSON at that position. This reader
+    /// stays for the tests that check leg selection on its own.
+    #[allow(dead_code)]
     pub fn eip155_leg(&self, chain_id: u64) -> Option<&Accept> {
+        self.eip155_leg_index(chain_id)
+            .map(|index| &self.accepts[index])
+    }
+
+    /// This function gives the POSITION of the leg for a chain id.
+    ///
+    /// The payment payload echoes the chosen leg back as raw JSON, and
+    /// the position is what finds it in [`Challenge::raw`].
+    pub fn eip155_leg_index(&self, chain_id: u64) -> Option<usize> {
         let wanted = format!("eip155:{chain_id}");
         self.accepts
             .iter()
-            .find(|leg| leg.network == wanted && leg.scheme == "exact")
+            .position(|leg| leg.network == wanted && leg.scheme == "exact")
+    }
+
+    /// This function gives the raw JSON of one leg.
+    ///
+    /// The function returns `None` when the raw challenge is absent,
+    /// which happens only for a value this client built itself rather
+    /// than decoded from a node.
+    pub fn raw_leg(&self, index: usize) -> Option<&serde_json::Value> {
+        self.raw.get("accepts")?.get(index)
+    }
+
+    /// This function gives the raw `resource` object of the challenge.
+    ///
+    /// The v2 payload carries it. A challenge with no `resource` gives
+    /// `None`, and the payload then omits the field rather than
+    /// sending a null.
+    pub fn raw_resource(&self) -> Option<&serde_json::Value> {
+        self.raw.get("resource")
     }
 }
 
@@ -145,12 +187,20 @@ pub fn base64_encode(bytes: &[u8]) -> String {
 }
 
 /// This function reads a challenge out of a base64 header value.
+///
+/// The function keeps the decoded JSON on the returned value, because
+/// the payment payload has to echo parts of it back unchanged.
 pub fn parse_header(header_value: &str) -> Result<Challenge, String> {
     let raw = base64_decode(header_value.trim())
         .ok_or_else(|| "the payment-required header is not valid base64".to_string())?;
     let text = String::from_utf8(raw)
         .map_err(|_| "the decoded challenge is not valid UTF-8".to_string())?;
-    serde_json::from_str(&text).map_err(|error| format!("the challenge is not valid JSON: {error}"))
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("the challenge is not valid JSON: {error}"))?;
+    let mut challenge: Challenge = serde_json::from_value(value.clone())
+        .map_err(|error| format!("the challenge is not a valid x402 challenge: {error}"))?;
+    challenge.raw = value;
+    Ok(challenge)
 }
 
 #[cfg(test)]
