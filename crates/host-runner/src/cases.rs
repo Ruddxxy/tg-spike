@@ -29,11 +29,26 @@ struct GoldenFile {
     vectors: Vec<GoldenVector>,
 }
 
+/// The environment variable that overrides the golden vector file.
+pub const GOLDEN_VECTORS_ENV: &str = "TG_GOLDEN_VECTORS";
+
 /// This finds the path to `golden_vectors.json` at the workspace root.
 ///
 /// The file sits next to the workspace `Cargo.toml`, two levels up from
 /// this crate's manifest directory.
+///
+/// [`GOLDEN_VECTORS_ENV`] overrides it. That exists for the tolerance
+/// bands: the expected bit patterns in the root file are calibrated for
+/// `TOLERANCE = 0.03`, so a `price` or `onchain` module cannot match
+/// them and must be checked against its own file. The override is a
+/// test-harness affordance only. Nothing in the shipped `.wasm` reads
+/// an environment variable, and the module imports nothing.
 pub fn golden_vectors_path() -> PathBuf {
+    if let Ok(path) = std::env::var(GOLDEN_VECTORS_ENV) {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")

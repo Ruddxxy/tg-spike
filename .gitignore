@@ -5,3 +5,4 @@ reference/
 __pycache__/
 .ruff_cache/
 corpus/ask-cache/
+dist/

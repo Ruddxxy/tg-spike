@@ -7,6 +7,27 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# One feature per tolerance band. Exactly one must be on, and `score.rs`
+# refuses to compile otherwise. The feature sets `TOLERANCE` at compile
+# time, so a variant carries no configuration input, no extra ABI
+# argument, and no runtime branch: the constant is folded into the
+# curve before the module is linked.
+#
+# Script registration is per-intent, so a per-intent variant is a
+# separate registered binary. Build one with:
+#
+#   cargo build -p eval-script --release --target wasm32-unknown-unknown \
+#     --no-default-features --features price
+#
+# `--no-default-features` is REQUIRED. Without it cargo keeps `weather`
+# on, two bands are enabled at once, and the build stops with the
+# message in `score.rs`.
+[features]
+default = ["weather"]
+weather = []
+price = []
+onchain = []
+
 [dependencies]
 # This crate has no dependency. An earlier version parsed both inputs
 # as JSON with serde_json. Both inputs are now short texts that hold one

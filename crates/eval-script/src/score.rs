@@ -36,46 +36,112 @@ use crate::value::{
     parse_value, scan_truth_values, scan_values, Family, ParsedValue, Unit, MAX_SCANNED_VALUES,
 };
 
+// Exactly one band feature must be on. Two bands would give two
+// `TOLERANCE` definitions and the error would be a confusing duplicate
+// symbol, so the build stops here with the reason instead.
+#[cfg(any(
+    all(feature = "weather", feature = "price"),
+    all(feature = "weather", feature = "onchain"),
+    all(feature = "price", feature = "onchain"),
+))]
+compile_error!(
+    "eval-script: exactly one tolerance band may be enabled. Cargo keeps the \
+     default `weather` feature unless you pass --no-default-features, so build \
+     a variant with: --no-default-features --features price"
+);
+
+#[cfg(not(any(feature = "weather", feature = "price", feature = "onchain")))]
+compile_error!(
+    "eval-script: no tolerance band is enabled. Pass --features weather, price, \
+     or onchain."
+);
+
 /// The relative error that scores one half.
 ///
 /// # THIS IS THE VARIANT POINT
 ///
-/// This constant is the ONE line that a per-intent variant of this
-/// script changes. Script registration is per-intent, so a different
-/// intent runs a different registered binary. A variant therefore
-/// needs no configuration system, no extra input field, and no change
-/// to the ABI: it changes this number, builds, and registers.
-///
-/// ## The value in THIS build, and the intent family it suits
-///
-/// `0.03` suits a WEATHER TEMPERATURE intent, in Celsius, which is
-/// what the corpus holds. A 1 degree miss on a 30 degree day is a 3.3
-/// percent error, and that is the boundary between a useful forecast
-/// and a poor one.
+/// This constant is the ONE thing a per-intent variant of this script
+/// changes. Script registration is per-intent, so a different intent
+/// runs a different registered binary. A variant therefore needs no
+/// configuration system, no extra input field, and no change to the
+/// ABI. The band is a cargo feature, so the value is folded into the
+/// curve at compile time and the shipped module holds no branch on it.
 ///
 /// The curve is `score = t^2 / (t^2 + e^2)`, where `e` is the relative
 /// error and `t` is this constant. At `e == t` the score is exactly
-/// 0.5. With `t = 0.03`:
-/// - A 1 percent error scores 0.900.
-/// - A 3 percent error scores 0.500.
-/// - A 50 percent error scores 0.0036.
+/// 0.5.
 ///
-/// ## Values for other intent families
+/// # The three bands
 ///
-/// These are starting points, not measured results. Each one needs the
-/// same corpus work this build did for temperature.
-/// - An ASSET PRICE intent wants a much tighter value, near `0.002`.
-///   A 3 percent error on a price is a bad quote, not a near miss.
-/// - A GAS PRICE intent wants a looser value, near `0.15`. Gas moves
-///   fast, and a forecast within 15 percent is useful.
-/// - A PERCENT or PROBABILITY intent wants `ABSOLUTE_FLOOR` raised
-///   too, because the values are small and a relative error on a
-///   0.02 probability is not meaningful.
+/// | band | `t` | intents |
+/// | --- | --- | --- |
+/// | `weather` | 0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST` |
+/// | `price` | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA` |
+/// | `onchain` | 0.15 | `GAS_PRICE`, `TVL_LOOKUP` |
 ///
-/// A good answer keeps almost all of its score, and a wild guess keeps
-/// almost none. The decay is graded, not a step: the curve separates
-/// every pair of answers, which a threshold rule cannot do.
+/// ## `weather = 0.03` is MEASURED
+///
+/// This is the only band with evidence behind it. It is calibrated
+/// against the 6,169-row weather corpus in `docs/EVALUATION.md`. A 1
+/// degree miss on a 30 degree day is a 3.3 percent error, which is the
+/// boundary between a useful forecast and a poor one. At `t = 0.03` a
+/// 1 percent error scores 0.900, a 3 percent error scores 0.500, and a
+/// 50 percent error scores 0.0036. The corpus median absolute error
+/// across the three live miners is 0.95 to 1.40 C, so the working part
+/// of the curve sits where the real errors are.
+///
+/// ## `price = 0.002` is REASONED, NOT MEASURED
+///
+/// There is no price corpus in this repository and no measurement
+/// behind this number. The reasoning: a quote 3 percent away from the
+/// market is not a near miss, it is a bad quote, and at `t = 0.03` it
+/// would still score 0.500. `0.002` puts the half-score point at 0.2
+/// percent, so a 1 percent error scores 0.038 and a 3 percent error
+/// scores 0.0044. That matches the spread a taker actually pays on a
+/// liquid pair. It needs the same corpus work the weather band had
+/// before anyone should trust the exact figure.
+///
+/// ## `onchain = 0.15` is REASONED, NOT MEASURED
+///
+/// Also unmeasured. Gas moves fast and a base fee can double inside a
+/// block, so a forecast within 15 percent is useful rather than wrong.
+/// At `t = 0.15` a 10 percent error scores 0.692 and a 50 percent error
+/// scores 0.083. A TVL lookup is grouped here for the same reason:
+/// the quantity is large, it moves with price, and agreement to the
+/// percent is not meaningful. Treat the figure as a starting point.
+///
+/// ## A note the price band does not fix
+///
+/// A PERCENT or PROBABILITY intent would also want `ABSOLUTE_FLOOR`
+/// raised, because those values are small and a relative error on a
+/// 0.02 probability is not meaningful. No band here does that, so no
+/// band here suits a probability intent.
+#[cfg(feature = "weather")]
 pub const TOLERANCE: f64 = 0.03;
+
+/// See the `weather` definition above for the full band table. This
+/// value is REASONED, NOT MEASURED: no price corpus exists here.
+#[cfg(all(feature = "price", not(feature = "weather")))]
+pub const TOLERANCE: f64 = 0.002;
+
+/// See the `weather` definition above for the full band table. This
+/// value is REASONED, NOT MEASURED: no gas corpus exists here.
+#[cfg(all(feature = "onchain", not(feature = "weather"), not(feature = "price")))]
+pub const TOLERANCE: f64 = 0.15;
+
+/// The name of the tolerance band this build carries.
+///
+/// This is a build-time label for the verification script and the
+/// report. It is not read by `rank_answer` and costs the module
+/// nothing at runtime.
+#[cfg(feature = "weather")]
+pub const BAND: &str = "weather";
+/// See the `weather` definition above.
+#[cfg(all(feature = "price", not(feature = "weather")))]
+pub const BAND: &str = "price";
+/// See the `weather` definition above.
+#[cfg(all(feature = "onchain", not(feature = "weather"), not(feature = "price")))]
+pub const BAND: &str = "onchain";
 
 /// The smallest divisor for the relative error.
 ///

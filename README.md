@@ -19,14 +19,14 @@ Measured against the protocol's compiled reference module under wazero, the
 production host. Full method, caveats, and reproduction commands are in
 [`docs/EVALUATION.md`](docs/EVALUATION.md).
 
-| Measurement                                                   |     This script |           Reference module |
-| ------------------------------------------------------------- | --------------: | -------------------------: |
-| Separates an answer 1 cent out from one a million out         |             yes |            no, both 0.0000 |
-| Score stability across 3 ground-truth renderings, n=6169      | 100% identical  |            97.0% identical |
-| Quantity extracted from real miner values, n=6169             |            100% |                          — |
-| Ranks 2 miners in the order an independent truth gives, n=200 |             yes |  no, ties both at 0.000000 |
-| Correlation with real Celsius error, head-to-head set         |            0.68 | `NaN`, it emits a constant |
-| Pays 1.0000 for the bare string `USD` against `192.43 USD`    |      no, 0.0000 |                        yes |
+| Measurement                                                   |    This script |           Reference module |
+| ------------------------------------------------------------- | -------------: | -------------------------: |
+| Separates an answer 1 cent out from one a million out         |            yes |            no, both 0.0000 |
+| Score stability across 3 ground-truth renderings, n=6169      | 100% identical |            97.0% identical |
+| Quantity extracted from real miner values, n=6169             |           100% |                          — |
+| Ranks 2 miners in the order an independent truth gives, n=200 |            yes |  no, ties both at 0.000000 |
+| Correlation with real Celsius error, head-to-head set         |           0.68 | `NaN`, it emits a constant |
+| Pays 1.0000 for the bare string `USD` against `192.43 USD`    |     no, 0.0000 |                        yes |
 
 The evaluation also reports what it does not show: no known-bad row was reliably
 caught under this ABI, the accuracy correlation is structurally circular, and the
@@ -91,12 +91,72 @@ score = t² / (t² + e²)      e = relative error, t = TOLERANCE = 0.03
 |         10.00% | 0.0825688073 |
 |       1000.00% | 0.0000089999 |
 
-The curve never reaches exactly 0.0 for a finite error, which is what lets it
-rank two wrong answers against each other. `TOLERANCE` is the single-line variant
-point: script registration is per-intent, so a per-intent variant changes that one
-constant and rebuilds. `0.03` suits a weather temperature intent in Celsius; see
-the doc comment on `TOLERANCE` in `crates/eval-script/src/score.rs` for price and
-gas suggestions.
+The curve never reaches exactly 0.0 for a finite error, which is what lets it rank
+two wrong answers against each other.
+
+## Intent variants
+
+Script registration is per-intent, so a per-intent variant is a separate registered
+binary. `TOLERANCE` is the only thing that changes between them, and it is a cargo
+feature, so the value is folded into the curve at compile time — no configuration
+input, no extra ABI argument, no runtime branch.
+
+| Band      |   `t` | Intents                                                              | Basis                                     |
+| --------- | ----: | -------------------------------------------------------------------- | ----------------------------------------- |
+| `weather` |  0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST`                                  | **measured** against the 6,169-row corpus |
+| `price`   | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA` | **reasoned, not measured**                |
+| `onchain` |  0.15 | `GAS_PRICE`, `TVL_LOOKUP`                                            | **reasoned, not measured**                |
+
+Only the weather band has evidence behind it. The other two are starting points
+argued from what a bad answer looks like in that domain — a 3% error is a bad quote
+on a liquid pair, and a gas forecast within 15% is useful. Each needs the same
+corpus work the weather band had before its exact figure should be trusted. The
+reasoning for each is in the `TOLERANCE` doc comment in
+`crates/eval-script/src/score.rs`.
+
+What the three bands do to the curve:
+
+| Relative error | `weather` |  `price` | `onchain` |
+| -------------: | --------: | -------: | --------: |
+|           0.2% |  0.995575 | 0.500000 |  0.999822 |
+|             1% |  0.900000 | 0.038462 |  0.995575 |
+|             3% |  0.500000 | 0.004425 |  0.961538 |
+|            10% |  0.082569 | 0.000400 |  0.692308 |
+|            50% |  0.003587 | 0.000016 |  0.082569 |
+
+Build and verify all three:
+
+```bash
+tools/build-variants.sh      # writes dist/eval_script_{weather,price,onchain}.wasm
+```
+
+The script checks each artefact for exactly three scored exports, zero imports,
+golden-vector agreement, and wasmtime/wazero bit-equality, and deletes any artefact
+that fails. To build one band by hand, `--no-default-features` is **required** —
+without it cargo keeps `weather` on, two bands are enabled, and the build stops:
+
+```bash
+cargo build -p eval-script --release --target wasm32-unknown-unknown \
+  --no-default-features --features price
+```
+
+### Before uploading any artefact
+
+**Gate every upload on the import count.** The `wasm32-wasip1` target builds this
+same crate to a file with the **same name** and four WASI imports — `fd_write`,
+`environ_get`, `environ_sizes_get`, `proc_exit`. Registering that artefact is
+rejected with `module[env] not instantiated`. Another entrant hit this and had it
+misreported to them as a `breakdown_answer` failure, so the error message will not
+tell you what is wrong.
+
+```bash
+wasm-tools print <file> | grep -c '(import'     # must print 0
+```
+
+| Artefact                                                 |               Imports |
+| -------------------------------------------------------- | --------------------: |
+| `target/wasm32-unknown-unknown/release/eval_script.wasm` |       0 — upload this |
+| `target/wasm32-wasip1/release/eval_script.wasm`          | 4 — never upload this |
 
 ## Determinism
 
