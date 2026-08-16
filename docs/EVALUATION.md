@@ -527,6 +527,92 @@ are not the published ones.
 
 ### 4.2 Strategies that still work
 
+**The prose farm is the largest one, and the ABI is the reason.** The
+node extracts a single answer text before `rank_answer` sees it, and for
+a miner whose `signal_mapping.label_field` names a container it builds
+that text with an LLM converter. Both weather miners now serving traffic
+are in that group: miner 211's `label_field` is `weather`, an array, and
+miner 212's is `current`, an object. So the module receives a SENTENCE,
+carrying several numbers, and nothing in `(question, ground_truth,
+miner_answer)` says which quantity was asked for.
+
+The scorer keeps the best match over every candidate, so an answer that
+states the WRONG value still scores well whenever some other quantity in
+the same sentence sits near the right one. Against a ground truth of
+28.1 C, with an honest miner 10% out scoring 0.0831:
+
+| miner answer | asserts | score |
+| --- | ---: | ---: |
+| `Wind 28.1 kph, temperature 34.9 C.` | 34.9 | 0.5000 |
+| `It feels like 28.1 C, actual temperature 34.9 C.` | 34.9 | 0.5000 |
+| `The temperature is 34.9 C, up from 28.1 C this morning.` | 34.9 | 0.5000 |
+| `Tokyo: 34.9C, feels like 28.1C, humidity 62%.` | 34.9 | 0.3333 |
+
+Every one of those is wrong and every one clears the honest bar by four
+to six times. In the first row `kph` is not a known unit, so `28.1`
+parses as dimensionless and is then read in the ground truth's unit —
+the wrong-quantity number is promoted to a temperature.
+
+The anti-spray divisor is the only brake and it is the wrong instrument.
+It counts numbers, so it charges an honest verbose answer exactly as it
+charges a farm. The most detailed CORRECT answer in the fixture set,
+`Tokyo: 28.1C, feels like 30.2C, wind 11.2 kph, humidity 62%.`, scores
+**0.2500 — below every wrong answer above**. Verbose honesty is punished
+harder than a wrong answer that mentions the right number in passing.
+
+**The converter output is cached, so this is repeatable rather than
+random.** Every validator scoring a given response reads the same
+string, and the same string again on a re-score. A farm that works once
+works every time and for every validator at once, which makes the prose
+farm materially more exploitable than a per-validator sampling would be.
+It also means a miner can test a phrasing offline and know exactly what
+it will earn.
+
+```
+cargo run -p eval-script --example prose_probe -- --emit
+(cd tools/wazero-runner && go run . -corpus ../../corpus/prose-input.jsonl \
+   -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+   -b ../../reference/scoring_module.wasm \
+   -out ../../corpus/prose-scores.jsonl)
+cargo run -p eval-script --example prose_probe -- --show
+```
+
+#### A rule that was tested and rejected
+
+One intent-agnostic fix was implemented and measured: when the answer
+holds several candidates, prefer the one whose surrounding words overlap
+the GROUND TRUTH's words. It uses no domain vocabulary — no weather
+terms, no unit list — only the truth's own tokens, so it would carry to
+a gas price or a stock price unchanged.
+
+It was dropped, because it failed on both sides at once. Scores below
+are the compiled module under wazero, ground truth in its prose
+rendering, with a three-word window each side:
+
+| answer | correct? | rule off | rule on |
+| --- | --- | ---: | ---: |
+| `Tokyo: 28.1C, feels like 30.2C, wind 11.2 kph, humidity 62%.` | yes | 0.2500 | **0.0347** |
+| `The temperature in Tokyo is 28.1 C. Yesterday it was 31.4 C.` | yes | 0.5000 | **0.0306** |
+| `Wind 28.1 kph, temperature 34.9 C.` | no | 0.5000 | 0.5000 |
+| `temperature 34.9 C, wind 28.1 kph` | no | 0.5000 | 0.5000 |
+
+Two honest answers fell **below** the 0.0831 honest bar, and the two
+attacks it was built to stop did not move. The causes are structural
+rather than tuning:
+
+- The unit letter `C` is vocabulary the ground truth also contains, and
+  it sits beside every temperature candidate. In the first row the wrong
+  candidate `30.2` wins 2 hits to 1 purely by sitting between two `C`s.
+- Adjacent clauses put both candidates inside each other's windows. In
+  `Wind 28.1 kph, temperature 34.9 C.` both numbers score 2 hits, the
+  tie falls back to best-match, and the farm survives. Narrowing the
+  window to separate them loses the signal instead: in the second row
+  `temperature` is already outside the correct candidate's window at
+  three words, which is why that row breaks.
+
+No window size satisfies both, so the approach is not rescued by
+tuning. The rule is not in the shipped module.
+
 One common token against a short ground truth scores 0.5. `is` against
 `is malicious` is one shared token out of two. Dividing by the union
 kills the reference's 1.0000 but cannot push a one-of-two overlap below
@@ -726,6 +812,13 @@ every HTTP response, so a rerun makes zero network requests.
 - **"Accuracy" in section 3 means agreement with Open-Meteo**, a
   reanalysis model, not station observations. The methodology gap may
   systematically favour whichever miner is closer to that model.
+- **It does not show that a prose answer is scored on the right
+  quantity.** The node hands the module one converted sentence, and the
+  three-string ABI never names the quantity that was asked for. Four
+  wrong answers in section 4.2 score 0.33 to 0.50 against an honest bar
+  of 0.0831, and the most detailed correct answer scores 0.2500. The
+  converter output is cached, so the effect is repeatable for every
+  validator rather than sampled.
 - **The corpus is one snapshot** of the daemon feed taken in August 2026,
   and the head-to-head set is one 28-minute window on 15 August 2026.
   Neither is a continuing sample.
