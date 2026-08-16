@@ -43,7 +43,6 @@ in full.
 | `crates/corpus-eval`    | Host-side reduction: prepares corpus rows for scoring, then turns the scored output into the evaluation tables.                                                   |
 | `crates/ask-harness`    | Buys Telegraph inference over x402 on Base Sepolia, to obtain head-to-head data the daemon feed cannot supply.                                                    |
 | `tools/wazero-runner`   | A Go host using `wazero`, the engine the network runs. Scores modules and writes the result files the Rust side checks against.                                   |
-| `tools/org-watcher`     | Polls the `telegraphprotocol` account for the hackathon repository. Unrelated to scoring.                                                                         |
 
 ## The ABI
 
