@@ -309,3 +309,105 @@ fn copying_the_question_back_scores_zero() {
         "an answer that repeats the question must score 0.0"
     );
 }
+
+// Registration runs a structural check that compares a SELF-match, one
+// ground truth against its own matching answer, with a CROSS-match, the
+// same ground truth against an unrelated answer. The self-match must
+// beat the cross-match. Two defects made a self-match score 0.0 or
+// below 1.0, and both are pinned here.
+
+#[test]
+fn a_text_that_holds_no_token_matches_itself() {
+    // "..." is all separators and "none" is a negation marker, so both
+    // tokenize to an empty set. An empty set against an empty set is
+    // agreement, not a total miss.
+    for text in ["...", "*", "none", "---", "!!!"] {
+        let earned = score_answer("", text, text);
+        assert_eq!(
+            earned, 1.0,
+            "a ground truth of {text:?} must match itself, earned {earned}"
+        );
+    }
+}
+
+#[test]
+fn an_answer_equal_to_the_ground_truth_always_scores_one() {
+    // A ground truth holding several numbers used to score its own text
+    // below 1.0, because the anti-spray divisor counts the numbers in
+    // the answer. A JSON truth earned 0.5 and a CVE line earned 0.333.
+    for truth in [
+        r#"{"temperature_2m":28.9,"time":"2026-08-10T12:00"}"#,
+        "CVE-2021-44228 affects log4j",
+        "the 2024 election result is certified",
+        "192.43 USD",
+        "high risk malicious binary",
+        "0",
+    ] {
+        let earned = score_answer("", truth, truth);
+        assert_eq!(
+            earned, 1.0,
+            "a ground truth of {truth:?} must match itself, earned {earned}"
+        );
+    }
+}
+
+#[test]
+fn a_self_match_beats_an_unrelated_cross_match() {
+    // The shape of the registration check itself.
+    // The third field is the concept group. Two fixtures that encode the
+    // SAME value are not a cross-match, so they never pair here.
+    let fixtures = [
+        ("192.43", "192.43", "price"),
+        ("34.7 C", "34.7 C", "body temp"),
+        (r#"{"temperature_2m":28.9}"#, "28.9", "air temp"),
+        ("The temperature was 28.9 C.", "28.9", "air temp"),
+        (
+            "high risk malicious binary",
+            "high risk malicious binary",
+            "verdict",
+        ),
+        (
+            "clear sky no precipitation",
+            "clear sky no precipitation",
+            "sky",
+        ),
+        ("none", "none", "empty"),
+    ];
+    for (index, (truth, matched, group)) in fixtures.iter().enumerate() {
+        let self_match = score_answer("", truth, matched);
+        assert!(
+            self_match > 0.0,
+            "self-match for {truth:?} scored {self_match}, which fails registration"
+        );
+        for (_, unrelated, other_group) in fixtures.iter() {
+            if other_group == group {
+                continue;
+            }
+            let cross = score_answer("", truth, unrelated);
+            assert!(
+                self_match > cross,
+                "fixture {index}: self-match {self_match} for {truth:?} did not beat \
+                 cross-match {cross} against {unrelated:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_unit_only_farm_still_scores_zero() {
+    // The two fixes above must not pay a miner that gives back the
+    // scaffolding of the ground truth without the value.
+    for (truth, farm) in [
+        ("192.43 USD", "USD"),
+        ("34.7 C", "C"),
+        ("12 gwei", "gwei"),
+        ("The temperature was 28.9 C.", "the temperature was C"),
+        ("The temperature was 28.9 C.", "temperature"),
+    ] {
+        let earned = score_answer("", truth, farm);
+        assert_eq!(
+            earned, 0.0,
+            "the farm {farm:?} against {truth:?} earned {earned}, want 0.0"
+        );
+    }
+}

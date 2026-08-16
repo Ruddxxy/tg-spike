@@ -32,7 +32,9 @@
 //! that differs gets slashed.
 
 use crate::text::{negation_disagrees, overlap_score, tokenize};
-use crate::value::{parse_value, scan_values, Family, ParsedValue, Unit, MAX_SCANNED_VALUES};
+use crate::value::{
+    parse_value, scan_truth_values, scan_values, Family, ParsedValue, Unit, MAX_SCANNED_VALUES,
+};
 
 /// The relative error that scores one half.
 ///
@@ -117,6 +119,26 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
         return 0.0;
     }
 
+    // An answer that IS the ground truth is correct, whatever shape the
+    // ground truth has.
+    //
+    // Without this, a ground truth holding several numbers scored its
+    // own text below 1.0: the anti-spray divisor in `score_quantities`
+    // counts the numbers in the ANSWER, and an answer that repeats a
+    // multi-number truth carries all of them. A JSON truth scored 0.500
+    // against itself and "CVE-2021-44228 affects log4j" scored 0.333.
+    // A registration check that compares a self-match against a
+    // cross-match can fail on that.
+    //
+    // The anti-spray rule is unweakened. It exists to charge a miner
+    // that lists numbers it was not asked for, and an answer equal to
+    // the ground truth listed nothing extra. No farm reaches this line,
+    // because a farm answer differs from the ground truth by
+    // construction.
+    if ground_truth.trim() == answer.trim() {
+        return 1.0;
+    }
+
     // Both sides are one clean value: compare the quantities, with the
     // full unit rules.
     if let (Some(truth), Some(reply)) = (parse_value(ground_truth), parse_value(answer)) {
@@ -140,10 +162,18 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
     //   so a whitespace split found no number at all and the CORRECT
     //   answer "28.9" scored 0.000.
     //
-    // The rule below fixes both. `scan_values` finds a quantity
+    // The rule below fixes both. `scan_truth_values` finds a quantity
     // anywhere inside a text, so prose and JSON both yield 28.9.
+    //
+    // The truth side uses `scan_truth_values`, not `scan_values`. The
+    // two differ in one rule: inside a JSON shaped truth, a number that
+    // sits in a quoted string is text, not a quantity. Without that
+    // rule the timestamp in {"temperature_2m":28.9,"time":"2026-...T12:00"}
+    // gave the year, the month, the hour and the minute as free match
+    // targets, and an answer of `2026` scored 1.0. See that function
+    // for the full reason.
     let mut truth_values = [ZERO_VALUE; MAX_SCANNED_VALUES];
-    let truth_count = scan_values(ground_truth, &mut truth_values);
+    let truth_count = scan_truth_values(ground_truth, &mut truth_values);
 
     if truth_count > 0 {
         // The ground truth carries a quantity, so the quantity IS the

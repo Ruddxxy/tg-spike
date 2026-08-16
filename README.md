@@ -10,7 +10,7 @@ using a curve built only from arithmetic that IEEE-754 defines exactly, so every
 validator host returns identical bits.
 
 ```
-296 tests   |   cargo test --workspace
+302 tests   |   cargo test --workspace
 ```
 
 ## Results
@@ -22,7 +22,7 @@ production host. Full method, caveats, and reproduction commands are in
 | Measurement                                                   |     This script |           Reference module |
 | ------------------------------------------------------------- | --------------: | -------------------------: |
 | Separates an answer 1 cent out from one a million out         |             yes |            no, both 0.0000 |
-| Score stability across 3 ground-truth renderings, n=6169      | 99.8% identical |            97.0% identical |
+| Score stability across 3 ground-truth renderings, n=6169      | 100% identical  |            97.0% identical |
 | Quantity extracted from real miner values, n=6169             |            100% |                          — |
 | Ranks 2 miners in the order an independent truth gives, n=200 |             yes |  no, ties both at 0.000000 |
 | Correlation with real Celsius error, head-to-head set         |            0.68 | `NaN`, it emits a constant |

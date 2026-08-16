@@ -898,8 +898,207 @@ pub const MAX_SCANNED_VALUES: usize = 32;
 /// A scan of JSON also picks up a date part and any digit inside a key
 /// name. That is noise the caller must expect: the caller keeps the
 /// BEST match, so extra numbers cost nothing unless one of them
-/// happens to match. See the scorer for the limit that puts on this.
+/// happens to match. See `scan_truth_values` for the rule that removes
+/// that noise from the GROUND TRUTH side.
 pub fn scan_values(text: &str, out: &mut [ParsedValue]) -> usize {
+    scan_runs_outside(text, &[], out)
+}
+
+/// The largest number of quoted strings this module inspects.
+///
+/// A ground truth in JSON form holds a handful of quoted strings. The
+/// cap bounds the work. A ground truth with more quoted strings than
+/// this keeps the digits in the later ones as candidates, which is the
+/// behaviour this module had before the cap existed. That is safe:
+/// the ground truth comes from the protocol's own pipeline, so a miner
+/// cannot pad it to push a timestamp past the cap.
+const MAX_QUOTED_SPANS: usize = 32;
+
+/// A half open byte range inside a text.
+#[derive(Clone, Copy)]
+struct Span {
+    /// The first byte of the range.
+    start: usize,
+    /// One past the last byte of the range.
+    end: usize,
+}
+
+/// This function tells if a text is shaped like a JSON document.
+///
+/// The test is deliberately crude: the trimmed text opens with `{` or
+/// `[` and closes with the matching bracket. This module has no JSON
+/// parser and does not want one. The test only decides whether the
+/// quoting rule in `scan_truth_values` applies, so a text that is not
+/// JSON keeps exactly the behaviour it had before.
+fn is_json_shaped(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 2 {
+        return false;
+    }
+    let first = trimmed.chars().next();
+    let last = trimmed.chars().next_back();
+    matches!(
+        (first, last),
+        (Some('{'), Some('}')) | (Some('['), Some(']'))
+    )
+}
+
+/// This function tells if a character can be part of a word.
+///
+/// The set is an ASCII letter and the underscore. A digit is NOT in the
+/// set, because a digit next to a digit is part of the same numeric run
+/// and never reaches this test.
+fn is_word_char(character: char) -> bool {
+    character.is_ascii_alphabetic() || character == '_'
+}
+
+/// This function tells if a quoted string holds a quantity rather than
+/// text that merely contains digits.
+///
+/// There are two ways a quoted string reads as a value, and a string
+/// that meets either one keeps its number:
+///
+/// 1. The whole string is one clean value by `parse_value`, the
+///    module's existing strict reader. This covers `"28.9 C"`,
+///    `"-5.2"`, `"$192.43"` and `"2026"` on its own.
+/// 2. The string holds exactly ONE numeric run, and that run stands on
+///    its own rather than sitting inside a word. This covers a value
+///    wrapped in a sentence, as `"28.9 C in Paris"` is.
+///
+/// Everything else is text. The two shapes this rule is built to reject
+/// are the two the corpus produces:
+/// - `"temperature_2m"` has one run, but the `2` is glued between `_`
+///   and `m`, so it is part of a field name.
+/// - `"2026-08-10T12:00"` has five runs, so it names an instant, not a
+///   quantity.
+///
+/// Neither half of the rule looks at a number's magnitude, so neither
+/// can be aimed at a chosen value.
+fn quoted_string_reads_as_a_value(inner: &str) -> bool {
+    if parse_value(inner).is_some() {
+        return true;
+    }
+    let mut runs = [
+        NumericRun { start: 0, end: 0 },
+        NumericRun { start: 0, end: 0 },
+    ];
+    if find_numeric_runs(inner, &mut runs) != 1 {
+        return false;
+    }
+    let run = runs[0];
+    let before_is_word = match inner.get(..run.start) {
+        Some(before) => before.chars().next_back().is_some_and(is_word_char),
+        None => true,
+    };
+    let after_is_word = match inner.get(run.end..) {
+        Some(after) => after.chars().next().is_some_and(is_word_char),
+        None => true,
+    };
+    !before_is_word && !after_is_word
+}
+
+/// This function records every quoted string whose digits are TEXT.
+///
+/// A quoted string inside a JSON document is a key name or a string
+/// value. Its digits belong to that text, not to a quantity: the `2`
+/// in `"temperature_2m"` names a field, and the parts of
+/// `"2026-08-10T12:00"` name an instant.
+///
+/// A quoted string that READS AS A VALUE is not recorded, so its number
+/// stays a candidate. See `quoted_string_reads_as_a_value` for the two
+/// ways a string can do that; the rule exists so that this function
+/// never drops a legitimate quantity that happens to arrive quoted.
+///
+/// The function writes the recorded ranges into `out` and gives the
+/// number found, which may exceed `out.len()`.
+fn find_opaque_quoted_spans(text: &str, out: &mut [Span]) -> usize {
+    let bytes = text.as_bytes();
+    let mut count = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            index += 1;
+            continue;
+        }
+        let start = index + 1;
+        let mut cursor = start;
+        let mut end = bytes.len();
+        while cursor < bytes.len() {
+            let byte = bytes[cursor];
+            if byte == b'\\' {
+                // A backslash escapes the next byte, so a `\"` does not
+                // close the string. A continuation byte of a multi byte
+                // character is never `"` or `\`, so stepping over two
+                // bytes here can never land the scan on a boundary that
+                // matters.
+                cursor += 2;
+                continue;
+            }
+            if byte == b'"' {
+                end = cursor;
+                break;
+            }
+            cursor += 1;
+        }
+        // `get` gives `None` when a bound is not a character boundary.
+        // Treat that as opaque: an unreadable string is not a value.
+        let opaque = match text.get(start..end) {
+            Some(inner) => !quoted_string_reads_as_a_value(inner),
+            None => true,
+        };
+        if opaque {
+            if count < out.len() {
+                out[count] = Span { start, end };
+            }
+            count += 1;
+        }
+        index = if end < bytes.len() {
+            end + 1
+        } else {
+            bytes.len()
+        };
+    }
+    count
+}
+
+/// This function finds every quantity inside a GROUND TRUTH text.
+///
+/// It is `scan_values` with one extra rule for a JSON shaped text: a
+/// number that sits inside a quoted string is text, not a quantity, so
+/// it is not a candidate match target. A quoted string that reads as a
+/// value keeps its number; see `quoted_string_reads_as_a_value`.
+///
+/// ## Why the ground truth needs this and the answer does not
+///
+/// The scorer keeps the BEST match over every (truth, answer) pair, so
+/// every incidental number in the ground truth is a free target. With
+/// the JSON rendering `{"temperature_2m":28.9,"time":"2026-08-10T12:00"}`
+/// the scan used to yield 2, 28.9, 2026, -8, -10, 12 and 0, and an
+/// answer of `2026`, `12`, `2` or `0` scored 1.0 while the same answer
+/// scored under 0.001 against the bare and prose renderings of the same
+/// truth. A registration check also failed on it: the unrelated answer
+/// `12 gwei` matched the `12` of `T12:00` and tied the correct answer.
+///
+/// The rule is a fact about JSON, not a tuning constant: characters
+/// between quotes are a string. It cannot be aimed at a chosen number,
+/// because it never looks at any number's magnitude.
+///
+/// The ANSWER keeps the lenient scan. The answer's number count is the
+/// anti-spray divisor, and dropping numbers from that count would make
+/// a spray of quoted numbers cheaper than a spray of bare ones.
+pub fn scan_truth_values(text: &str, out: &mut [ParsedValue]) -> usize {
+    let mut spans = [Span { start: 0, end: 0 }; MAX_QUOTED_SPANS];
+    let span_count = if is_json_shaped(text) {
+        find_opaque_quoted_spans(text, &mut spans).min(spans.len())
+    } else {
+        0
+    };
+    scan_runs_outside(text, &spans[..span_count], out)
+}
+
+/// This function does the work of `scan_values`, skipping any run that
+/// starts inside one of the given ranges.
+fn scan_runs_outside(text: &str, skip: &[Span], out: &mut [ParsedValue]) -> usize {
     let mut runs = [NumericRun { start: 0, end: 0 }; MAX_SCANNED_VALUES];
     let run_count = find_numeric_runs(text, &mut runs).min(runs.len());
 
@@ -907,6 +1106,16 @@ pub fn scan_values(text: &str, out: &mut [ParsedValue]) -> usize {
     for run in runs.iter().take(run_count) {
         if written >= out.len() {
             break;
+        }
+        let mut inside_quotes = false;
+        for span in skip {
+            if run.start >= span.start && run.start < span.end {
+                inside_quotes = true;
+                break;
+            }
+        }
+        if inside_quotes {
+            continue;
         }
         let run_text = &text[run.start..run.end];
         let mut buffer = [0u8; NUMERIC_BUFFER_BYTES];

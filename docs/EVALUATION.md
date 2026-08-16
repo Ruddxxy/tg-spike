@@ -128,12 +128,18 @@ n = 6169:
 
 | scorer    | mean spread |   median |      p90 | rows identical |
 | --------- | ----------: | -------: | -------: | -------------: |
-| ours      |    0.000447 | 0.000000 | 0.000000 |   6159 (99.8%) |
+| ours      |    0.000000 | 0.000000 | 0.000000 |  6169 (100.0%) |
 | reference |    0.029502 | 0.000000 | 0.000000 |   5987 (97.0%) |
 
-99.8% of rows score identically across bare, prose, and JSON. The
+Every row scores identically across bare, prose, and JSON. The
 reference is 97.0% identical, but for a different reason: it scores
 0.0000 on almost everything, and a constant is trivially stable.
+
+This was 6159 (99.8%) before the quoted-string rule in section 4.2. The
+10 rows that differed were the defect: each had a JSON timestamp whose
+hour, 22 or 23, sat closer to the miner's temperature than the real
+value did, so the JSON rendering paid a wrong answer up to 0.748 where
+the bare rendering paid 0.025.
 
 ### 2.3 Accuracy correlation
 
@@ -170,7 +176,7 @@ document does not offer it as such — it is the circularity above,
 restated. The claim that our scorer survives real traffic rests on
 section 2.1 instead, which does not use the correlation at all: 100%
 quantity extraction on 6,169 real miner values, across all three
-ground-truth renderings, with 99.8% of rows scoring identically
+ground-truth renderings, with 100% of rows scoring identically
 whichever rendering is used. That is a measurement of parsing, unit
 conversion, and rendering robustness on production text, and it stands
 whether or not the correlation means anything.
@@ -521,16 +527,6 @@ are not the published ones.
 
 ### 4.2 Strategies that still work
 
-**A JSON ground truth can be farmed with a date part.** A JSON rendering
-carries a timestamp, so it holds several numbers. The scorer cannot know
-which is the wanted value, so it takes the best match. The answer `2026`
-scores 1.000000 against
-`{"temperature_2m":28.9,"time":"2026-08-10T12:00"}`. The same answer
-scores below 0.001 against the bare and prose renderings. Dividing by
-the ground-truth number count instead would punish an honest miner for a
-rendering it does not control. Test:
-`known_weakness_a_json_truth_can_be_farmed_with_a_date_part`.
-
 One common token against a short ground truth scores 0.5. `is` against
 `is malicious` is one shared token out of two. Dividing by the union
 kills the reference's 1.0000 but cannot push a one-of-two overlap below
@@ -543,6 +539,23 @@ Repeated-word padding scores 0.5. Token sets deduplicate, so padding
 with one repeated word adds exactly one distinct token. Padding with
 distinct words falls below 0.05.
 
+A prose ground truth carrying a date is still farmable. The
+quoted-string rule in section 4.3 is scoped to JSON-shaped text, so
+`2026` against `The temperature at 2026-08-10T12:00 was 28.9 C.` still
+scores 1.0. No prose rendering in the corpus carries a date, so the rule
+was not widened to skip date-shaped runs anywhere: that needs a date
+grammar, which would risk eating a real negative such as `-5 C`, and a
+grammar tuned until the numbers improve is not defensible.
+
+That same rule made one case worse. A JSON ground truth with no quantity
+in value position, such as `{"time":"2026-08-10T12:00"}`, now yields no
+truth value at all and falls to the text branch, so the scaffolding
+answer `time` scores 0.333 where it scored 0.000 before. Against that,
+the unrelated answer `12 gwei` falls from 1.000 to 0.000 on the same
+truth. Such a truth carries no quantity, so the text branch is the
+module's designed treatment, but the scaffolding row is a real
+regression and is recorded as one.
+
 Three rows in the table above read as profitable but are not attacks:
 precision spam, hedge word, and double negation all score 1.0 because
 they are the correct answer in an unusual form. `not not malicious`
@@ -551,7 +564,7 @@ means `malicious`.
 ### 4.3 Defects the corpus found in this scorer
 
 The adversarial suite tested only inputs written by hand. Running the
-scorer against real corpus renderings found two live defects:
+scorer against real corpus renderings found three live defects:
 
 1. **Echoing a junk question earned 0.1357.** The question `[direct] 207
 -> /price` contains `207`, so an echo of it parsed as a _number_ and
@@ -568,10 +581,51 @@ scorer against real corpus renderings found two live defects:
    eight times better than real work. A JSON truth has no whitespace, so
    number extraction found nothing and a correct answer scored zero.
 
-Both are fixed and pinned by tests. The fix is the dispatch rule in
-`score_answer`: when the ground truth carries a quantity and the answer
-carries none, the score is 0.0, because the miner did not supply what
-was asked for.
+   The fix for both is the dispatch rule in `score_answer`: when the
+   ground truth carries a quantity and the answer carries none, the
+   score is 0.0, because the miner did not supply what was asked for.
+
+3. **Every number inside a JSON ground truth was a free match target.**
+   The lenient scan of
+   `{"temperature_2m":28.9,"time":"2026-08-10T12:00"}` produced seven
+   candidates — `2` from the key name `temperature_2m`, the real `28.9`,
+   then `2026`, `-8`, `-10`, `12` and `0` from the timestamp — and the
+   scorer keeps the BEST match over every pair. So the answers `2026`,
+   `12`, `2` and `0` each scored 1.000000 against that rendering while
+   scoring under 0.003 against the bare and prose renderings of the same
+   truth. It also broke a registration structural check: the unrelated
+   answer `12 gwei` matched the `12` of `T12:00` and scored 1.0000,
+   tying the correct answer `28.9`, so the self-match did not strictly
+   beat the cross-match. On the 6,169-row corpus the same defect paid 10
+   rows up to 0.748 for an answer the bare rendering scored 0.025.
+
+   The fix is a syntax rule, in `scan_truth_values`: **in a ground truth
+   shaped like a JSON document, a number that sits inside a quoted
+   string is text — a key name or an ISO timestamp — and is not a
+   candidate match target, unless the quoted string reads as a value.**
+   A quoted string reads as a value when the whole string parses under
+   `parse_value`, the module's existing strict reader (`"28.9 C"`,
+   `"-5.2"`, `"$192.43"`), or when it holds exactly one number that
+   stands on its own rather than sitting inside a word
+   (`"28.9 C in Paris"`). That second clause is what keeps a legitimate
+   quantity from being dropped; the two shapes it rejects are the two
+   the corpus produces, `"temperature_2m"`, whose `2` is glued between
+   `_` and `m`, and `"2026-08-10T12:00"`, which holds five numbers.
+
+   The rule never looks at a number's magnitude, so it cannot be aimed
+   at a chosen value. It applies to the GROUND TRUTH only: the answer
+   keeps the lenient scan, because the answer's number count is the
+   anti-spray divisor and dropping quoted numbers from that count would
+   make a spray of quoted numbers cheaper than a spray of bare ones.
+
+   Measured effect: the `2026` farm falls from 1.000000 to 0.000000188,
+   the `12 gwei` cross-match from 1.000000 to 0.002625, the correct
+   answer `28.9` stays 1.000000, all six cross-branch rows stay
+   0.000000, and score stability across the three renderings rises from
+   99.8% to 100% of 6,169 rows (section 2.2). Tests:
+   `a_json_truth_cannot_be_farmed_with_a_date_or_key_part`,
+   `a_json_truth_self_match_beats_an_unrelated_cross_match`,
+   `a_quoted_value_in_a_json_truth_still_scores`.
 
 ---
 

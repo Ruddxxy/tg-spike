@@ -456,36 +456,86 @@ fn a_number_inside_a_prose_truth_is_found() {
     assert_eq!(json, bare, "json {json} must match bare {bare}");
 }
 
-/// This test records a strategy that STILL WORKS.
+/// This test pins the fix for a strategy that USED TO WORK.
 ///
-/// A JSON ground truth carries a timestamp, so it holds several
-/// numbers. The scorer cannot know which of them is the wanted value,
-/// so it takes the best match. An answer that gives back a date part
-/// therefore scores 1.0 against that rendering.
+/// A JSON ground truth carries a timestamp, so the lenient scan used to
+/// hand back the year, the month, the day, the hour and the minute as
+/// candidate match targets, plus the `2` inside the key name
+/// `temperature_2m`. Each of those scored 1.0. The truth side now
+/// ignores a number that sits inside a quoted string, so the only
+/// candidate left is the value in JSON value position.
 ///
-/// The alternative, dividing by the ground-truth number count too,
-/// would punish an honest miner for the way the truth happens to be
-/// rendered. The evaluation report states this limit rather than
-/// hiding it.
+/// The score for a date part must now match the score the SAME answer
+/// earns against the bare and prose renderings of the same truth. That
+/// equality is the real property: the score must not depend on the
+/// rendering, because the miner does not choose the rendering.
 #[test]
-fn known_weakness_a_json_truth_can_be_farmed_with_a_date_part() {
-    let year = score(JSON_TRUTH, "2026");
-    assert_eq!(
-        year, 1.0,
-        "the year from the JSON truth earned {year}; the report must state this"
-    );
-    // The same answer earns almost nothing against the other two
-    // renderings, which is why the report gives the bare rendering as
-    // the headline. Those two run the year through the curve against
-    // 28.9, so they give a tiny value rather than an exact 0.0.
-    let bare = score("28.9", "2026");
-    let prose = score(PROSE_TRUTH, "2026");
-    assert!(
-        bare < 1e-3,
-        "the year against the bare rendering gave {bare}"
-    );
-    assert!(
-        prose < 1e-3,
-        "the year against the prose rendering gave {prose}"
-    );
+fn a_json_truth_cannot_be_farmed_with_a_date_or_key_part() {
+    for farm in ["2026", "8", "10", "12", "0", "2", "00"] {
+        let json = score(JSON_TRUTH, farm);
+        let bare = score("28.9", farm);
+        let prose = score(PROSE_TRUTH, farm);
+        assert!(
+            json < 1e-2,
+            "the incidental number {farm:?} earned {json} against the JSON truth"
+        );
+        assert_eq!(
+            json, bare,
+            "{farm:?} scored {json} against JSON and {bare} against bare"
+        );
+        assert_eq!(
+            json, prose,
+            "{farm:?} scored {json} against JSON and {prose} against prose"
+        );
+    }
+}
+
+/// This test pins the registration property the fix restores.
+///
+/// Registration compares a SELF-match with a CROSS-match and requires
+/// the self-match to win strictly. The `12` of `T12:00` used to make the
+/// unrelated answer `12 gwei` score 1.0 against the JSON truth, which
+/// tied the correct answer `28.9` and failed the check.
+#[test]
+fn a_json_truth_self_match_beats_an_unrelated_cross_match() {
+    let self_match = score(JSON_TRUTH, "28.9");
+    assert_eq!(self_match, 1.0, "the correct answer earned {self_match}");
+    for unrelated in ["12 gwei", "192.43 USD", "2026", "0"] {
+        let cross = score(JSON_TRUTH, unrelated);
+        assert!(
+            self_match > cross,
+            "the cross-match {unrelated:?} earned {cross}, which does not lose to {self_match}"
+        );
+    }
+}
+
+/// This test guards the exception that keeps a quoted real value.
+///
+/// A rendering that quotes its value, as `{"temperature_2m":"28.9 C"}`
+/// does, must still score. The admission test is `parse_value`, so a
+/// quoted string that is one clean value keeps its number while a
+/// quoted timestamp does not.
+#[test]
+fn a_quoted_value_in_a_json_truth_still_scores() {
+    for quoted in [
+        // The whole string is one clean value.
+        "{\"temperature_2m\":\"28.9 C\"}",
+        "{\"temperature_2m\":\"28.9\"}",
+        // The string wraps one value in a sentence. The number still
+        // stands on its own, so it is not part of a word.
+        "{\"summary\":\"28.9 C in Paris\"}",
+    ] {
+        assert_eq!(
+            score(quoted, "28.9"),
+            1.0,
+            "the correct answer lost its score against {quoted:?}"
+        );
+        assert_eq!(
+            score(quoted, "28.5"),
+            score("28.9", "28.5"),
+            "a near miss against {quoted:?} left the bare rendering"
+        );
+    }
+    // The rule must not pay the scaffolding of the string it admits.
+    assert_eq!(score("{\"summary\":\"28.9 C in Paris\"}", "summary"), 0.0);
 }

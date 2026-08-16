@@ -272,7 +272,17 @@ pub fn intersection_size(left: &TokenSet, right: &TokenSet) -> usize {
 /// attack. See the module doc comment.
 pub fn overlap_score(ground_truth: &TokenSet, answer: &TokenSet) -> f64 {
     if ground_truth.is_empty() && answer.is_empty() {
-        return 0.0;
+        // Two texts that both hold no comparable token agree with each
+        // other. A ground truth of "..." or "none" tokenizes to nothing,
+        // because the separators drop the first and the negation list
+        // removes the second. Returning 0.0 here scored an answer
+        // IDENTICAL to the ground truth as a total miss, which fails a
+        // registration self-match check.
+        //
+        // This gives away nothing. A ground truth with no token carries
+        // no information to farm, and any answer that does hold a token
+        // still scores 0.0 against it through the union divisor below.
+        return 1.0;
     }
     let shared = intersection_size(ground_truth, answer);
     let union = ground_truth.len() + answer.len() - shared;
