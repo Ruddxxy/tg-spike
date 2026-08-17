@@ -42,18 +42,26 @@ use crate::value::{
 #[cfg(any(
     all(feature = "weather", feature = "price"),
     all(feature = "weather", feature = "onchain"),
+    all(feature = "weather", feature = "label"),
     all(feature = "price", feature = "onchain"),
+    all(feature = "price", feature = "label"),
+    all(feature = "onchain", feature = "label"),
 ))]
 compile_error!(
-    "eval-script: exactly one tolerance band may be enabled. Cargo keeps the \
+    "eval-script: exactly one band may be enabled. Cargo keeps the \
      default `weather` feature unless you pass --no-default-features, so build \
      a variant with: --no-default-features --features price"
 );
 
-#[cfg(not(any(feature = "weather", feature = "price", feature = "onchain")))]
+#[cfg(not(any(
+    feature = "weather",
+    feature = "price",
+    feature = "onchain",
+    feature = "label"
+)))]
 compile_error!(
-    "eval-script: no tolerance band is enabled. Pass --features weather, price, \
-     or onchain."
+    "eval-script: no band is enabled. Pass --features weather, price, onchain, \
+     or label."
 );
 
 /// The relative error that scores one half.
@@ -129,6 +137,24 @@ pub const TOLERANCE: f64 = 0.002;
 #[cfg(all(feature = "onchain", not(feature = "weather"), not(feature = "price")))]
 pub const TOLERANCE: f64 = 0.15;
 
+/// The `label` band. This value is NOT MEASURED and it is not what the
+/// band is for.
+///
+/// A label intent asks for a verdict, a grade, a severity or a
+/// language, not for a quantity. The band exists for the DISPATCH rule
+/// below, not for this constant: see `answer_without_a_quantity`. The
+/// tolerance still has to hold a value, because a label truth can carry
+/// an incidental number and an answer can quote it, so the number is
+/// kept at the weather figure. Nothing measured that choice for a label
+/// intent.
+#[cfg(all(
+    feature = "label",
+    not(feature = "weather"),
+    not(feature = "price"),
+    not(feature = "onchain")
+))]
+pub const TOLERANCE: f64 = 0.03;
+
 /// The name of the tolerance band this build carries.
 ///
 /// This is a build-time label for the verification script and the
@@ -142,6 +168,14 @@ pub const BAND: &str = "price";
 /// See the `weather` definition above.
 #[cfg(all(feature = "onchain", not(feature = "weather"), not(feature = "price")))]
 pub const BAND: &str = "onchain";
+/// See the `weather` definition above.
+#[cfg(all(
+    feature = "label",
+    not(feature = "weather"),
+    not(feature = "price"),
+    not(feature = "onchain")
+))]
+pub const BAND: &str = "label";
 
 /// The smallest divisor for the relative error.
 ///
@@ -247,10 +281,7 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
         let mut answer_values = [ZERO_VALUE; MAX_SCANNED_VALUES];
         let answer_count = scan_values(answer, &mut answer_values);
         if answer_count == 0 {
-            // No partial credit for restating the words around the
-            // number. This is the same treatment a blank answer gets,
-            // for the same reason: the miner did not answer.
-            return 0.0;
+            return answer_without_a_quantity(ground_truth, answer);
         }
         // The divisor needs the truth's numbers INCLUDING the ones
         // inside quoted strings. See `score_quantities` for why the
@@ -265,6 +296,57 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
     }
 
     // The ground truth carries no quantity, so this is a text answer.
+    score_two_texts(ground_truth, answer)
+}
+
+/// This function scores an answer that holds no quantity, against a
+/// ground truth that holds one. It is dispatch rule 6, and it is the
+/// ONE rule the `label` band changes.
+///
+/// # Every band except `label`: 0.0
+///
+/// The quantity IS the answer, so an answer without one has not
+/// answered. There is no partial credit for restating the words around
+/// the number. This is the same treatment a blank answer gets, for the
+/// same reason.
+///
+/// The rule is load bearing. Without it, the truth
+/// "The temperature was 28.9 C." paid 0.667 for the answer
+/// "the temperature was C", which gives back the scaffolding and no
+/// value, while an honest miner 10 percent out earned 0.081. Never
+/// relax it in a band whose answer is a quantity.
+#[cfg(not(feature = "label"))]
+fn answer_without_a_quantity(_ground_truth: &str, _answer: &str) -> f64 {
+    0.0
+}
+
+/// This function scores an answer that holds no quantity, against a
+/// ground truth that holds one. See the other definition of this
+/// function for the rule every other band uses.
+///
+/// # The `label` band: compare the texts
+///
+/// A label intent asks for a verdict, a grade, a severity, a language
+/// or a translation. The wanted answer is a WORD. The ground truth
+/// still often carries a number that nobody asked for: a confidence
+/// beside the verdict, a CVSS score beside the severity, a protocol
+/// version beside the grade, the digits of an identifier.
+///
+/// In every other band that number makes a number mandatory, and the
+/// correct word then scores 0.0. Measured on the 40 question promotion
+/// benchmark, six rows scored 0.0 for BOTH the good and the bad answer,
+/// so they gave the node nothing to compare. On one of them the truth
+/// "Partly true. The programme reduced transmission by 40%." paid
+/// 0.0000 for the correct "partly true" and 0.0036 for the wrong "60%".
+///
+/// This band sends that case to the text comparison instead. The farm
+/// the rule above stops does not exist here, because here the words ARE
+/// the answer.
+///
+/// Registration is per intent, so this is a separate registered binary
+/// and no numeric band is touched by it.
+#[cfg(feature = "label")]
+fn answer_without_a_quantity(ground_truth: &str, answer: &str) -> f64 {
     score_two_texts(ground_truth, answer)
 }
 

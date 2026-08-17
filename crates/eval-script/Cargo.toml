@@ -27,6 +27,10 @@ default = ["weather"]
 weather = []
 price = []
 onchain = []
+# The `label` band is not a tolerance change. It changes ONE dispatch
+# rule: a truth that carries a number no longer makes a number
+# mandatory. See `answer_without_a_quantity` in `score.rs`.
+label = []
 
 [dependencies]
 # This crate has no dependency. An earlier version parsed both inputs

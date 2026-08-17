@@ -370,6 +370,11 @@ const PROSE_TRUTH: &str = "The temperature was 28.9 C.";
 /// The JSON rendering of the same corpus ground truth.
 const JSON_TRUTH: &str = "{\"temperature_2m\":28.9,\"time\":\"2026-08-10T12:00\"}";
 
+/// The `label` band relaxes dispatch rule 6 on purpose, so the farm
+/// this test names is priced differently there. See
+/// `the_label_band_pays_for_the_scaffolding_it_admits` in
+/// `tests/label_band.rs` for what that band does instead.
+#[cfg(not(feature = "label"))]
 #[test]
 fn an_answer_of_the_unit_alone_earns_nothing() {
     for (truth, answer) in [
@@ -388,12 +393,22 @@ fn an_answer_of_the_unit_alone_earns_nothing() {
     }
 }
 
+/// The `label` band relaxes dispatch rule 6 on purpose, so the farm
+/// this test names is priced differently there. See
+/// `the_label_band_pays_for_the_scaffolding_it_admits` in
+/// `tests/label_band.rs` for what that band does instead.
+#[cfg(not(feature = "label"))]
 #[test]
 fn repeating_the_unit_many_times_earns_nothing() {
     let earned = score("192.43 USD", "USD USD USD USD USD USD USD USD");
     assert_eq!(earned, 0.0, "the repeated unit earned {earned}");
 }
 
+/// The `label` band relaxes dispatch rule 6 on purpose, so the farm
+/// this test names is priced differently there. See
+/// `the_label_band_pays_for_the_scaffolding_it_admits` in
+/// `tests/label_band.rs` for what that band does instead.
+#[cfg(not(feature = "label"))]
 #[test]
 fn giving_back_the_prose_words_without_the_number_earns_nothing() {
     // This is the leak the cross-branch probe found. The answer repeats the
@@ -537,5 +552,8 @@ fn a_quoted_value_in_a_json_truth_still_scores() {
         );
     }
     // The rule must not pay the scaffolding of the string it admits.
+    // The `label` band answers this case through the text path by
+    // design, so the assertion belongs to the numeric bands.
+    #[cfg(not(feature = "label"))]
     assert_eq!(score("{\"summary\":\"28.9 C in Paris\"}", "summary"), 0.0);
 }
