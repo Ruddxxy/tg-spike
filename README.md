@@ -10,7 +10,8 @@ using a curve built only from arithmetic that IEEE-754 defines exactly, so every
 validator host returns identical bits.
 
 ```
-302 tests   |   cargo test --workspace
+306 tests   |   cargo test --workspace
+  7 more    |   cargo test -p eval-script --no-default-features --features label
 ```
 
 ## Results
@@ -96,24 +97,46 @@ two wrong answers against each other.
 ## Intent variants
 
 Script registration is per-intent, so a per-intent variant is a separate registered
-binary. `TOLERANCE` is the only thing that changes between them, and it is a cargo
-feature, so the value is folded into the curve at compile time — no configuration
-input, no extra ABI argument, no runtime branch.
+binary. A band is a cargo feature, so what it changes is folded in at compile time —
+no configuration input, no extra ABI argument, no runtime branch.
 
 | Band      |   `t` | Intents                                                              | Basis                                     |
 | --------- | ----: | -------------------------------------------------------------------- | ----------------------------------------- |
 | `weather` |  0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST`                                  | **measured** against the 6,169-row corpus |
 | `price`   | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA` | **reasoned, not measured**                |
 | `onchain` |  0.15 | `GAS_PRICE`, `TVL_LOOKUP`                                            | **reasoned, not measured**                |
+| `label`   |  0.03 | `URL_SCAN`, `SSL_VERIFICATION`, `CVE_LOOKUP`, `SENTIMENT_ANALYSIS`, `TEXT_CLASSIFICATION`, `CONTENT_MODERATION`, `FACT_CHECK`, `LANGUAGE_TRANSLATION` | **reasoned, not measured**                |
 
-Only the weather band has evidence behind it. The other two are starting points
-argued from what a bad answer looks like in that domain — a 3% error is a bad quote
-on a liquid pair, and a gas forecast within 15% is useful. Each needs the same
-corpus work the weather band had before its exact figure should be trusted. The
-reasoning for each is in the `TOLERANCE` doc comment in
-`crates/eval-script/src/score.rs`.
+Only the weather band has evidence behind it. The others are starting points argued
+from what a bad answer looks like in that domain — a 3% error is a bad quote on a
+liquid pair, and a gas forecast within 15% is useful. Each needs the same corpus work
+the weather band had before its exact figure should be trusted. The reasoning for
+each is in the `TOLERANCE` doc comment in `crates/eval-script/src/score.rs`.
 
-What the three bands do to the curve:
+### The `label` band is not a tolerance change
+
+The first three bands differ only in `t`. The `label` band differs in one dispatch
+rule: a ground truth that carries a number no longer makes a number mandatory.
+
+A label intent asks for a verdict, a grade, a severity or a language. The wanted
+answer is a word, but the truth often carries a number nobody asked for — a
+confidence beside the verdict, a CVSS score beside the severity, a protocol version
+beside the grade. In the numeric bands that number sends the row down the numeric
+path, and the correct word scores 0.0. Measured on the 40-question benchmark, six
+rows scored 0.0 for both the good and the bad answer, and on one of them the truth
+`Partly true. The programme reduced transmission by 40%.` paid 0.0000 for the correct
+`partly true` and 0.0036 for the wrong `60%`.
+
+The band costs something, and the cost is why it is a separate binary: relaxing that
+rule reopens the farm that returns the words around a value and no value. On a
+weather truth this band pays 0.667 for `the temperature was C`. **Never register it
+for an intent whose answer is a quantity.** `crates/eval-script/tests/label_band.rs`
+asserts both halves of that, including the price.
+
+Its `t` is the weather figure and nothing measured it for a label intent. The band is
+for the dispatch rule, not the curve.
+
+What the bands do to the curve (`label` matches `weather`):
 
 | Relative error | `weather` |  `price` | `onchain` |
 | -------------: | --------: | -------: | --------: |
@@ -123,15 +146,16 @@ What the three bands do to the curve:
 |            10% |  0.082569 | 0.000400 |  0.692308 |
 |            50% |  0.003587 | 0.000016 |  0.082569 |
 
-Build and verify all three:
+Build and verify all four:
 
 ```bash
-tools/build-variants.sh      # writes dist/eval_script_{weather,price,onchain}.wasm
+tools/build-variants.sh      # writes dist/eval_script_{weather,price,onchain,label}.wasm
 ```
 
 The script checks each artefact for exactly three scored exports, zero imports,
-golden-vector agreement, and wasmtime/wazero bit-equality, and deletes any artefact
-that fails. To build one band by hand, `--no-default-features` is **required** —
+golden-vector agreement, wasmtime/wazero bit-equality, the four Stage 1 gates and the
+four Stage 2 numbers, and deletes any artefact that fails. Point it at a different
+champion with `CHAMPION=path/to/module.wasm tools/build-variants.sh`. To build one band by hand, `--no-default-features` is **required** —
 without it cargo keeps `weather` on, two bands are enabled, and the build stops:
 
 ```bash

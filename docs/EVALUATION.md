@@ -715,7 +715,202 @@ scorer against real corpus renderings found three live defects:
 
 ---
 
-## 5. Determinism
+## 5. The promotion gates
+
+The node records four numbers when it compares a candidate script
+against a champion: `worst_self_match`, `score_stddev`,
+`candidate_margin` and `candidate_wins`. The weather corpus cannot
+measure any of them. It holds one intent family and every ground truth
+is a quantity, so it says nothing about a URL verdict or a CVE severity.
+
+The benchmark for this section is 40 (question, good answer, bad answer)
+triples over intent families outside the corpus: URL scans, SSL grades,
+CVE severities, sentiment labels, translations in five scripts, fact
+checks, chat completions, and a short numeric tail. Every ground truth
+appears in one of the three renderings a validator may send: bare, prose
+from the response converter, and JSON. Every good answer is a plausible
+miner output rather than a copy of the truth, because a benchmark of
+byte-identical good answers measures the exact-match short circuit and
+nothing else.
+
+```
+cargo run -p corpus-eval --example promotion_gates -- --report
+```
+
+Every score comes from the compiled module under wazero. The harness
+also scores each row through the native library and refuses to print a
+number the two do not agree on.
+
+### 5.1 The results, weather band
+
+| gate | result |
+| --- | --- |
+| `worst_self_match` | 1.0000 on all 40, floor is 0.75 |
+| `score_stddev` | 0.4253 over 80 candidate scores |
+| `candidate_margin` | 0.48 |
+| `candidate_wins` | 29/40 |
+
+The champion in that run is the compiled reference module. It is a
+teaching example rather than the production scorer, so those columns
+are a baseline and not a target; the harness takes the champion as an
+argument for that reason:
+
+```
+cargo run -p corpus-eval --example promotion_gates -- \
+  --report --module dist/eval_script_weather.wasm --champion path/to/other.wasm
+```
+
+### 5.2 Self-match did not survive a doubled space
+
+`worst_self_match` reached 1.0000 through the exact-match short circuit,
+which needs BYTE equality. The same gate with one doubled space in the
+answer — the same words, the same numbers, the same meaning — scored
+0.5000 on two of the 40:
+
+| question | truth | self-match | with one doubled space |
+| --- | --- | ---: | ---: |
+| q09 | `CVE-2021-44228 has a severity rating of CRITICAL.` | 1.0000 | 0.5000 |
+| q36 | `INVOICE 2024-001` | 1.0000 | 0.5000 |
+
+Both truths carry two numbers, and the anti-spray divisor counted both
+of them against an answer that simply repeated the truth. Nothing in
+this repository controls how the node builds the answer of a self-match
+check. If anything normalises or re-renders the truth first, that is a
+hard rejection at the 0.75 floor.
+
+The divisor now counts only the answer numbers the truth does NOT hold,
+and only for an answer that gives back EVERY quantity the truth holds.
+The second half of that rule is not decoration. Without it the wrong
+answer `INVOICE 2024-002` kept the `2024` for free and scored 1.0000,
+level with the right one. With it, that answer misses the `001` target,
+pays for both of its numbers, and scores 0.5000.
+
+Across all 174 vectors of the benchmark, exactly two moved:
+`q09-selfws` and `q36-selfws`, both 0.5000 to 1.0000. No corpus row can
+move, because no corpus miner answer holds more than one number, so the
+divisor was already 1 on every one of the 6,169 rows.
+
+The spray it charges for is unchanged in kind and barely changed in
+degree: five numbers with one right went from 0.200 to 0.250. An answer
+with no number at all never reaches the divisor, so the farm that
+returns the words around a value keeps its 0.0.
+
+### 5.3 A truth that carries a number it was not asked for
+
+Six of the 40 rows scored 0.0000 for BOTH candidates, so they gave the
+node nothing to compare:
+
+| question | ground truth | good | bad |
+| --- | --- | ---: | ---: |
+| q02 | `{"verdict":"phishing","confidence":0.97}` | 0.0000 | 0.0000 |
+| q07 | `{"grade":"A","protocol":"TLS 1.3"}` | 0.0000 | 0.0000 |
+| q09 | `CVE-2021-44228 has a severity rating of CRITICAL.` | 0.0000 | 0.0000 |
+| q10 | `{"cve":"CVE-2021-44228","severity":"critical","cvss":9.8}` | 0.0000 | 0.0000 |
+| q14 | `{"label":"negative","score":0.88}` | 0.0000 | 0.0000 |
+| q23 | `{"verdict":"false","sources":3}` | 0.0000 | 0.0000 |
+
+Dispatch rule 6 is the cause: the truth holds a quantity, the answer
+holds none, so the answer scores 0.0. In these rows the quantity is a
+confidence, a CVSS score or a protocol version, and the wanted answer is
+a word.
+
+One row is worse than a tie. On q22 the truth
+`Partly true. The programme reduced transmission by 40%.` paid 0.0000
+for the correct `partly true` and 0.0036 for the wrong `60%`. A wrong
+number outranked a right label.
+
+The `label` band changes that one rule and nothing else. Measured on the
+same benchmark, seven vectors move and all seven are `good` answers
+rising off the floor:
+
+| question | weather band | label band |
+| --- | ---: | ---: |
+| q02 good | 0.0000 | 0.2000 |
+| q07 good | 0.0000 | 0.1667 |
+| q09 good | 0.0000 | 0.1429 |
+| q10 good | 0.0000 | 0.1429 |
+| q14 good | 0.0000 | 0.2000 |
+| q22 good | 0.0000 | 0.2500 |
+| q23 good | 0.0000 | 0.2500 |
+
+No `bad` answer moves, so nothing on this benchmark was paid that was
+not paid before.
+
+| band | `worst_self_match` | `score_stddev` | `candidate_margin` | `candidate_wins` |
+| --- | ---: | ---: | ---: | ---: |
+| weather | 1.0000 | 0.4253 | 0.48 | 29/40 |
+| price | 1.0000 | 0.4272 | 0.48 | 29/40 |
+| onchain | 1.0000 | 0.4250 | 0.44 | 29/40 |
+| label | 1.0000 | 0.4140 | 0.51 | 36/40 |
+
+The `label` figures are NOT MEASURED in the sense the weather tolerance
+is. They come from this 40-row benchmark, which this repository wrote.
+No live traffic and no corpus stands behind them.
+
+The band has a price. Rule 6 is what stops an answer that gives back the
+scaffolding of a truth and none of its value, and this band relaxes it.
+On a weather truth the band pays 0.667 for `the temperature was C`,
+against 0.0831 for an honest miner 10 percent out. It must never be
+registered for an intent whose answer is a quantity, and
+`crates/eval-script/tests/label_band.rs` asserts both the gain and the
+price.
+
+### 5.4 Stage 1, and what a long answer used to cost
+
+All four Stage 1 gates pass on all four bands: the module loads and
+answers all 174 vectors, a blank and a whitespace-only answer both score
+exactly 0.0000, a correct answer beats an unrelated one on 40 of 40
+questions, and all 14 long, emoji and non-ASCII cases return without a
+trap.
+
+The last gate asks only that a long answer does not crash. Ours did not
+crash, and it was still a defect: the check for a digit in front of an
+exponent marker walked the whole text in front of every `e`, so the cost
+of one call grew with the square of the answer length, which the miner
+chooses up to the 1 MiB cap.
+
+Measured under wazero, one `rank_answer` call, fastest of three:
+
+| answer size | before | after | speedup |
+| ---: | ---: | ---: | ---: |
+| 8 KiB | 61,987 us | 462 us | 134x |
+| 16 KiB | 246,555 us | 880 us | 280x |
+| 32 KiB | 987,097 us | 1,729 us | 571x |
+| 64 KiB | 4,012,775 us | 3,264 us | 1229x |
+| 1 MiB (projected) | 1,043,221,173 us | 44,274 us | 23563x |
+
+Cost per doubling of the input: 4.0x before, 1.9x after. The projected
+row extends each column along its own measured curve; at the cap that is
+about 17 minutes before the change and about 44 ms after it.
+
+The root cause was confirmed rather than assumed: the same 64 KiB text
+with a single digit in front of it, which makes the prefix search stop
+at byte 0, cost 2,047 us instead of 1,055,783 us natively. The fix keeps
+one accumulator instead of rescanning, so the predicate is the same at
+every index and all 174 vectors are bit-identical across it.
+
+### 5.5 What the Unicode gates cost
+
+Three limits are real and none of them is a bug to be fixed without a
+consensus decision:
+
+- `МОСКВА` against `москва` scores 0.0000 while `CRITICAL` against
+  `critical` scores 1.0000. Case folding is ASCII only, because a
+  Unicode fold table changes with the Unicode version and two validators
+  on different tables is a slashing event. The cost is that a correct
+  answer differing only in case scores zero in every non-Latin script.
+- CJK has no spaces, so `你好世界` is one token. Partial credit is
+  impossible: exact or zero, nothing between. The same holds for
+  Japanese and Thai.
+- A token is capped at 32 BYTES, which is 32 ASCII characters but about
+  10 Devanagari ones. Two different Hindi words sharing a 10-character
+  prefix score 1.0000. That is a false positive rather than a farm, since
+  it needs the truth's own prefix, but a wrong answer can be paid in
+  full.
+
+---
+
+## 6. Determinism
 
 The network can run either wasmtime or wazero. Two honest validators on
 different engines must never disagree.
@@ -736,7 +931,7 @@ cargo run -p host-runner --release
 
 ---
 
-## 6. Reproduction
+## 7. Reproduction
 
 ```
 # build both modules
@@ -778,10 +973,26 @@ cargo run -p corpus-eval --release -- prepare \
 cargo run -p corpus-eval --release -- stats corpus/h2h-scores.jsonl
 cargo run -p corpus-eval --release -- rankflip corpus/h2h-scores.jsonl
 
+# section 5, the promotion gates. Scores every row through the compiled
+# module under wazero and compares against a champion .wasm.
+cargo run -p corpus-eval --example promotion_gates -- --report
+cargo run -p corpus-eval --example promotion_gates -- \
+  --report --module dist/eval_script_label.wasm --champion reference/scoring_module.wasm
+
+# section 5.4, the cost ladder. --measure runs once per version of the
+# code, so the before column needs the pre-fix source checked out.
+cargo run --release -p corpus-eval --example promotion_gates -- --measure
+cargo run --release -p corpus-eval --example promotion_gates -- --measure --after
+cargo run --release -p corpus-eval --example promotion_gates -- --table
+
+# every band, with its Stage 1 gates, its Stage 2 numbers and its hash
+tools/build-variants.sh
+
 # verification
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --workspace
+cargo test -p eval-script --no-default-features --features label
 cargo run -p host-runner --release
 ```
 
@@ -790,7 +1001,7 @@ every HTTP response, so a rerun makes zero network requests.
 
 ---
 
-## 7. What this evaluation does not show
+## 8. What this evaluation does not show
 
 - **It does not settle a miner ranking.** Section 3 ranks two miners on
   10 paired clusters with a 19.9% bootstrap flip rate. That is
