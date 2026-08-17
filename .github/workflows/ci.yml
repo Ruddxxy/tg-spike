@@ -1,0 +1,115 @@
+name: CI
+
+# Band consistency used to depend on someone remembering to run
+# tools/build-variants.sh by hand. That is what let three
+# tolerance-calibrated assertions fail on the price and onchain bands
+# for as long as those bands existed. Every band now runs its full
+# suite here, on every push.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, workspace suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # This build comes BEFORE the tests on purpose. Nine tests in
+      # crates/host-runner/tests/abi_tests.rs drive the compiled module
+      # through wasmtime and now FAIL rather than skip when it is
+      # missing, so a test job without this step is a red job.
+      - name: Build the wasm module the ABI tests drive
+        run: cargo build --release --target wasm32-unknown-unknown -p eval-script
+
+      - name: Workspace test suite
+        run: cargo test --workspace
+
+  bands:
+    name: every band, full suite and artefact gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # go.mod pins go 1.25.0. wazero v1.12.0 does not build on 1.23.
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/wazero-runner/go.mod
+          cache-dependency-path: tools/wazero-runner/go.sum
+
+      # build-variants.sh refuses to run without this. Its import gate
+      # counts lines of `wasm-tools print` output, and with wasm-tools
+      # absent that count is zero for every artefact, so the gate would
+      # pass a module that registration rejects.
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --locked
+
+      - name: Go vet and gofmt
+        working-directory: tools/wazero-runner
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+
+      # The default champion is the protocol's reference module, built
+      # from another repository and gitignored here. CI does not depend
+      # on a third-party clone staying up: it uses a build of this crate
+      # as the champion instead. That still exercises the whole Stage 2
+      # path -- two real .wasm files scored through the same engine over
+      # the same vectors -- which is what this job is checking. The
+      # PUBLISHED margin and wins numbers come from a run against the
+      # real champion, not from here.
+      - name: Build the CI champion
+        run: |
+          cargo build --release --target wasm32-unknown-unknown -p eval-script
+          cp target/wasm32-unknown-unknown/release/eval_script.wasm \
+             target/ci-champion.wasm
+
+      # Per band: exactly three scored exports, zero imports, wasm-tools
+      # validate, golden-vector agreement, wasmtime vs wazero bit
+      # equality, that band's FULL test suite, the four Stage 1 gates and
+      # the four Stage 2 numbers. A band that fails any of them is
+      # deleted from dist/ and the script exits non-zero.
+      - name: Build and verify all four bands
+        run: CHAMPION=target/ci-champion.wasm tools/build-variants.sh
+
+      - name: Show the hash record
+        run: cat dist/HASHES.md
+
+      - name: Upload the artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-script-bands
+          path: |
+            dist/*.wasm
+            dist/HASHES.md
+          if-no-files-found: error

@@ -1,8 +1,24 @@
 target/
 corpus/
+corpus/ask-cache/
 tools/wazero-runner/wazero-runner
-reference/
 __pycache__/
 .ruff_cache/
-corpus/ask-cache/
-dist/
+
+# The protocol's reference module is built from another repository. It is
+# the default Stage 2 champion; tools/build-variants.sh prints the clone
+# command when it is missing.
+reference/
+
+# Build artefacts are not committed. They are rebuilt and re-verified by
+# tools/build-variants.sh in one command, and a committed binary that
+# must be hash-checked immediately before upload is an invitation to
+# upload a stale one.
+#
+# This is `dist/*` and not `dist/`. Git does not descend into an excluded
+# DIRECTORY, so a `!dist/HASHES.md` negation under `dist/` would never be
+# reached. Excluding the contents instead leaves the directory walkable.
+dist/*
+# The hash RECORD is committed, because that is the part worth keeping:
+# it says what was built and what to check before registering it.
+!dist/HASHES.md

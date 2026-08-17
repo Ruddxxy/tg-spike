@@ -65,6 +65,26 @@ GOLDEN_IN="golden_vectors.json"
 CHAMPION="${CHAMPION:-reference/scoring_module.wasm}"
 FAILED=0
 
+# `reference/` is gitignored, so on a clean checkout the default
+# champion does NOT exist and every band's Stage 2 step would fail with
+# a message about the harness rather than about the missing file.
+if [ ! -f "$CHAMPION" ]; then
+  echo "error: no champion module at $CHAMPION"
+  echo "  Stage 2 compares each band against a champion .wasm. The default is"
+  echo "  the protocol's reference module, which is gitignored because it is"
+  echo "  built from another repository:"
+  echo
+  echo "    git clone --depth 1 https://github.com/telegraphprotocol/telegraph-examples /tmp/tgref"
+  echo "    (cd /tmp/tgref/wasm-scoring-module/rust-module && \\"
+  echo "       cargo build --release --target wasm32-unknown-unknown)"
+  echo "    mkdir -p reference && cp \\"
+  echo "       /tmp/tgref/wasm-scoring-module/rust-module/target/wasm32-unknown-unknown/release/scoring_module.wasm \\"
+  echo "       reference/"
+  echo
+  echo "  Or point at any other .wasm:  CHAMPION=path/to/module.wasm $0"
+  exit 1
+fi
+
 mkdir -p "$DIST"
 
 banner() { printf '\n=== %s ===\n' "$1"; }
@@ -210,11 +230,35 @@ else
 fi
 
 banner "ARTEFACTS"
+
+# The hash record.
+#
+# dist/ is gitignored: a committed binary that must be hash-checked
+# immediately before upload is an invitation to upload a stale one. The
+# HASHES.md file is the exception, un-ignored in .gitignore, because the
+# thing worth keeping in version control is the RECORD of what was
+# built, not the bytes. Check the hash you are about to upload against
+# the row here.
+HASHES="$DIST/HASHES.md"
+{
+  echo "# dist artefact hashes"
+  echo
+  echo "Written by \`tools/build-variants.sh\`. Do not edit by hand."
+  echo
+  echo "The \`.wasm\` files themselves are gitignored and are rebuilt by that"
+  echo "script. This file is the record of what it built: check the sha256 of"
+  echo "the artefact you are about to register against its row."
+  echo
+  echo "| band | imports | exports | size | sha256 |"
+  echo "| --- | ---: | --- | ---: | --- |"
+} > "$HASHES"
+
 printf '%-14s %-8s %-8s %s\n' band imports exports sha256
 for BAND in weather price onchain label; do
   OUT="$DIST/eval_script_${BAND}.wasm"
   if [ ! -f "$OUT" ]; then
     printf '%-14s %s\n' "$BAND" "MISSING"
+    echo "| \`$BAND\` | — | — | — | MISSING, this band failed a check |" >> "$HASHES"
     continue
   fi
   IMP="$(wasm-tools print "$OUT" | grep -c '(import' || true)"
@@ -222,8 +266,22 @@ for BAND in weather price onchain label; do
          | grep -vE '^(memory|__data_end|__heap_base)$' | sort | tr '\n' ' ')"
   EXPOK="no"
   [ "$EXP" = "alloc dealloc rank_answer " ] && EXPOK="ok"
-  printf '%-14s %-8s %-8s %s\n' "$BAND" "$IMP" "$EXPOK" "$(sha256sum "$OUT" | cut -d" " -f1)"
+  SUM="$(sha256sum "$OUT" | cut -d" " -f1)"
+  SIZE="$(stat -c%s "$OUT")"
+  printf '%-14s %-8s %-8s %s\n' "$BAND" "$IMP" "$EXPOK" "$SUM"
+  echo "| \`$BAND\` | $IMP | $EXPOK | $SIZE | \`$SUM\` |" >> "$HASHES"
 done
+
+{
+  echo
+  echo "Every row above passed: exactly three scored exports, zero imports,"
+  echo "golden-vector agreement, wasmtime/wazero bit-equality, its band's full"
+  echo "test suite, the four Stage 1 gates and the four Stage 2 numbers. A band"
+  echo "that fails any of those is deleted from \`dist/\` before this file is"
+  echo "written, so a MISSING row means that band must not be uploaded."
+} >> "$HASHES"
+echo
+echo "hash record: $HASHES"
 
 if [ "$FAILED" != "0" ]; then
   banner "RESULT: FAILED"

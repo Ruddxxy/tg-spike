@@ -1,5 +1,8 @@
 # tg-spike
 
+[![CI](https://github.com/Ruddxxy/tg-spike/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruddxxy/tg-spike/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A canonical scoring script for the Telegraph Protocol, written for Track 2, plus
 the tooling used to measure it against the protocol's own reference module on
 real miner traffic.
@@ -158,9 +161,31 @@ tools/build-variants.sh      # writes dist/eval_script_{weather,price,onchain,la
 ```
 
 The script checks each artefact for exactly three scored exports, zero imports,
-golden-vector agreement, wasmtime/wazero bit-equality, the four Stage 1 gates and the
-four Stage 2 numbers, and deletes any artefact that fails. Point it at a different
-champion with `CHAMPION=path/to/module.wasm tools/build-variants.sh`. To build one band by hand, `--no-default-features` is **required** —
+golden-vector agreement, wasmtime/wazero bit-equality, that band's full test suite,
+the four Stage 1 gates and the four Stage 2 numbers, and deletes any artefact that
+fails. It writes the sha256 of each surviving artefact to `dist/HASHES.md`, which is
+the row to check before registering anything. `dist/*.wasm` is not committed;
+`dist/HASHES.md` is.
+
+**It needs a champion, and on a clean checkout there is not one.** Stage 2 compares
+each band against a champion `.wasm`, and the default is the protocol's reference
+module, which lives in the gitignored `reference/` because it is built from another
+repository. The script names this and exits 1 rather than failing four bands with a
+confusing message. Build it once:
+
+```bash
+git clone --depth 1 https://github.com/telegraphprotocol/telegraph-examples /tmp/tgref
+(cd /tmp/tgref/wasm-scoring-module/rust-module && \
+   cargo build --release --target wasm32-unknown-unknown)
+mkdir -p reference && cp \
+   /tmp/tgref/wasm-scoring-module/rust-module/target/wasm32-unknown-unknown/release/scoring_module.wasm \
+   reference/
+```
+
+Or point at any other module: `CHAMPION=path/to/module.wasm tools/build-variants.sh`.
+That is the one change needed when the real production scorer lands.
+
+To build one band by hand, `--no-default-features` is **required** —
 without it cargo keeps `weather` on, two bands are enabled, and the build stops:
 
 ```bash

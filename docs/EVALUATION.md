@@ -74,11 +74,16 @@ module calls no `ln`, `exp`, or `powf`, because those come from a host
 maths library and two hosts can differ in the last bit. A one-bit
 disagreement between validators is a slashing event.
 
-`TOLERANCE` is the single-line variant point. Script registration is
-per-intent, so a per-intent variant changes that one constant and
-rebuilds. `0.03` suits a weather temperature intent in Celsius. See the
-doc comment on `TOLERANCE` in `crates/eval-script/src/score.rs` for
-suggested values for price and gas intents.
+`TOLERANCE` is the tolerance variant point, and `0.03` suits a weather
+temperature intent in Celsius. Script registration is per-intent, so a
+per-intent variant is a separate registered binary; the band is a cargo
+feature, so the value is folded into the curve at compile time.
+
+Three of the four bands change only that constant. The fourth, `label`,
+changes a dispatch rule instead and leaves the constant at the weather
+figure — see section 5.3. See the doc comment on `TOLERANCE` in
+`crates/eval-script/src/score.rs` for all four, and for why the price
+and gas figures are reasoned rather than measured.
 
 ---
 
@@ -743,7 +748,7 @@ byte-identical good answers measures the exact-match short circuit and
 nothing else.
 
 ```
-cargo run -p corpus-eval --example promotion_gates -- --report
+cargo run --release -p corpus-eval --example promotion_gates -- --report
 ```
 
 Every score comes from the compiled module under wazero. The harness
@@ -765,7 +770,7 @@ are a baseline and not a target; the harness takes the champion as an
 argument for that reason:
 
 ```
-cargo run -p corpus-eval --example promotion_gates -- \
+cargo run --release -p corpus-eval --example promotion_gates -- \
   --report --module dist/eval_script_weather.wasm --champion path/to/other.wasm
 ```
 
@@ -984,8 +989,8 @@ cargo run -p corpus-eval --release -- rankflip corpus/h2h-scores.jsonl
 
 # section 5, the promotion gates. Scores every row through the compiled
 # module under wazero and compares against a champion .wasm.
-cargo run -p corpus-eval --example promotion_gates -- --report
-cargo run -p corpus-eval --example promotion_gates -- \
+cargo run --release -p corpus-eval --example promotion_gates -- --report
+cargo run --release -p corpus-eval --example promotion_gates -- \
   --report --module dist/eval_script_label.wasm --champion reference/scoring_module.wasm
 
 # section 5.4, the cost ladder. --measure runs once per version of the

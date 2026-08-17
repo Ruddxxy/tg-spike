@@ -1,0 +1,37 @@
+# gitleaks configuration
+#
+# There is exactly one hardcoded key in this repository and it is a
+# published test vector, not a secret. Without this allowlist a scanner
+# flags it on every run and the alert becomes noise that hides a real
+# finding later.
+#
+# Run:  gitleaks detect --config .gitleaks.toml
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+The go-ethereum test suite signing key. It appears in the documentation of
+many Ethereum libraries, its address is 0x2c7536e3605d9c16a7a3d7b1898e529396a65c23,
+and crates/ask-harness/src/sign.rs asserts that address so a substitution
+would fail the tests. It holds nothing and must never be funded.
+
+The harness uses it for `dry-run` ONLY, and a dry run sends no request and
+spends nothing. The real signing key is read from ASK_HARNESS_PRIVATE_KEY at
+run time and is never written to disk, to the response cache, or to a log
+line. See the DEMO_KEY doc comment in crates/ask-harness/src/main.rs.
+"""
+
+regexes = [
+  '''0x4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318''',
+]
+
+paths = [
+  # Fixture addresses, digests and signatures for the EIP-712 and
+  # secp256k1 unit tests. Every value is a public address, a public
+  # Base Sepolia USDC contract address, or a hash of test input.
+  '''crates/ask-harness/src/eip712\.rs''',
+  '''crates/ask-harness/src/sign\.rs''',
+  '''crates/ask-harness/src/challenge\.rs''',
+]
