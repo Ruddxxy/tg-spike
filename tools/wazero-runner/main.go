@@ -6,7 +6,7 @@
 // each string field on its own, writes the bytes at the returned
 // pointer, then calls rank_answer with three (ptr, len) pairs.
 //
-// This tool has three modes, chosen by flag:
+// This tool has five modes, chosen by flag:
 //
 //   - Compare mode (the default): score one input triple through two
 //     wasm modules and print both scores side by side, with the raw f32
@@ -16,6 +16,12 @@
 //   - Golden mode (-golden): score every vector in a golden vector file
 //     through one wasm module and write a JSON file with the f32 bit
 //     pattern of each result, for cross host bit equality checks.
+//   - Corpus mode (-corpus): score every prepared corpus row through two
+//     wasm modules, under all three ground truth renderings each, and
+//     write one JSON line per row.
+//   - Timing mode (-timing): time the rank_answer call alone for every
+//     vector, with a fresh module instance per repeat, and write the
+//     microsecond cost of each.
 //
 // See README.md in this directory for exact command lines.
 package main

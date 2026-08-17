@@ -81,7 +81,7 @@ go run . -golden ../../golden_vectors.json \
 
 For each vector, `question` is the empty string (`ptr=0, len=0`),
 `ground_truth` is the vector's `ground_truth` field, and `miner_answer` is
-the vector's `response` field.
+the vector's `miner_answer` field.
 
 Output shape:
 
@@ -99,6 +99,56 @@ lowercase, `0x` prefixed, always 8 hex digits.
 
 Golden mode stops on the first error, because a bit equality report with a
 gap in it is not evidence. The error message names the failing vector.
+
+## Mode 4: corpus
+
+Scores every prepared corpus row through TWO wasm modules, under all three
+ground-truth renderings each, and writes one JSON line per row: six scores
+per row. `corpus-eval prepare` writes the input; `corpus-eval stats`,
+`parsecov` and `knownbad` read the output. This is what produces the
+corpus tables in `docs/EVALUATION.md` section 2.
+
+```sh
+go run . -corpus ../../corpus/eval-input.jsonl \
+  -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+  -b ../../reference/scoring_module.wasm \
+  -out ../../corpus/eval-scores.jsonl
+```
+
+Input rows carry `row_id`, `question`, the three renderings `gt_bare`,
+`gt_prose` and `gt_json`, plus `miner_value` and the join fields the
+reduction needs. Both modules see identical bytes for every field.
+
+## Mode 5: timing
+
+Times `rank_answer` alone for every vector in a vector file, and writes the
+microsecond cost of each. Each repeat gets a FRESH module instance, so no
+run reuses a warmed allocator, and the fastest repeat wins. This is the
+mode behind the cost ladder in `docs/EVALUATION.md` section 5.4.
+
+```sh
+go run . -timing ../../target/promotion-vectors.json \
+  -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \
+  -out ../../target/timing-wazero.json \
+  -repeats 3
+```
+
+`-repeats` defaults to 3. Output shape:
+
+```json
+{
+  "runner": "wazero",
+  "wasm_path": "<the -a path as given>",
+  "wasm_sha256": "<lowercase hex sha256 of the wasm file bytes>",
+  "repeats": 3,
+  "vectors": [{ "name": "...", "bytes": 8192, "micros": 462, "value": 0.5 }]
+}
+```
+
+Only the `rank_answer` call is timed. Runtime construction, module
+instantiation, `alloc` and the host memory write all sit outside the
+measured span, because the question is what an attacker-controlled answer
+length costs inside the score function.
 
 ## Code quality
 

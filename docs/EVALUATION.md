@@ -7,6 +7,15 @@ reference scoring module.
 Every table below has a command that reproduces it. Every claim carries
 its sample size.
 
+**On the reference module.** Every "reference" column in this document is
+the protocol's published `word_overlap` module, compiled and run under
+wazero. The core team has confirmed that module is a simplified teaching
+example, not the production scorer, which ships in the hackathon repo.
+Read those columns as a documented baseline, not as the bar a candidate
+has to clear. The comparison will be re-run against the real scorer when
+it lands; `promotion_gates` already takes the champion as an argument so
+that re-run needs no code change.
+
 ---
 
 ## 1. Numeric separation
@@ -135,7 +144,7 @@ Every row scores identically across bare, prose, and JSON. The
 reference is 97.0% identical, but for a different reason: it scores
 0.0000 on almost everything, and a constant is trivially stable.
 
-This was 6159 (99.8%) before the quoted-string rule in section 4.2. The
+This was 6159 (99.8%) before the quoted-string rule in section 4.3. The
 10 rows that differed were the defect: each had a JSON timestamp whose
 hour, 22 or 23, sat closer to the miner's temperature than the real
 value did, so the JSON rendering paid a wrong answer up to 0.748 where
@@ -541,12 +550,12 @@ states the WRONG value still scores well whenever some other quantity in
 the same sentence sits near the right one. Against a ground truth of
 28.1 C, with an honest miner 10% out scoring 0.0831:
 
-| miner answer | asserts | score |
-| --- | ---: | ---: |
-| `Wind 28.1 kph, temperature 34.9 C.` | 34.9 | 0.5000 |
-| `It feels like 28.1 C, actual temperature 34.9 C.` | 34.9 | 0.5000 |
-| `The temperature is 34.9 C, up from 28.1 C this morning.` | 34.9 | 0.5000 |
-| `Tokyo: 34.9C, feels like 28.1C, humidity 62%.` | 34.9 | 0.3333 |
+| miner answer                                              | asserts |  score |
+| --------------------------------------------------------- | ------: | -----: |
+| `Wind 28.1 kph, temperature 34.9 C.`                      |    34.9 | 0.5000 |
+| `It feels like 28.1 C, actual temperature 34.9 C.`        |    34.9 | 0.5000 |
+| `The temperature is 34.9 C, up from 28.1 C this morning.` |    34.9 | 0.5000 |
+| `Tokyo: 34.9C, feels like 28.1C, humidity 62%.`           |    34.9 | 0.3333 |
 
 Every one of those is wrong and every one clears the honest bar by four
 to six times. In the first row `kph` is not a known unit, so `28.1`
@@ -589,12 +598,12 @@ It was dropped, because it failed on both sides at once. Scores below
 are the compiled module under wazero, ground truth in its prose
 rendering, with a three-word window each side:
 
-| answer | correct? | rule off | rule on |
-| --- | --- | ---: | ---: |
-| `Tokyo: 28.1C, feels like 30.2C, wind 11.2 kph, humidity 62%.` | yes | 0.2500 | **0.0347** |
-| `The temperature in Tokyo is 28.1 C. Yesterday it was 31.4 C.` | yes | 0.5000 | **0.0306** |
-| `Wind 28.1 kph, temperature 34.9 C.` | no | 0.5000 | 0.5000 |
-| `temperature 34.9 C, wind 28.1 kph` | no | 0.5000 | 0.5000 |
+| answer                                                         | correct? | rule off |    rule on |
+| -------------------------------------------------------------- | -------- | -------: | ---------: |
+| `Tokyo: 28.1C, feels like 30.2C, wind 11.2 kph, humidity 62%.` | yes      |   0.2500 | **0.0347** |
+| `The temperature in Tokyo is 28.1 C. Yesterday it was 31.4 C.` | yes      |   0.5000 | **0.0306** |
+| `Wind 28.1 kph, temperature 34.9 C.`                           | no       |   0.5000 |     0.5000 |
+| `temperature 34.9 C, wind 28.1 kph`                            | no       |   0.5000 |     0.5000 |
 
 Two honest answers fell **below** the 0.0831 honest bar, and the two
 attacks it was built to stop did not move. The causes are structural
@@ -743,12 +752,12 @@ number the two do not agree on.
 
 ### 5.1 The results, weather band
 
-| gate | result |
-| --- | --- |
+| gate               | result                          |
+| ------------------ | ------------------------------- |
 | `worst_self_match` | 1.0000 on all 40, floor is 0.75 |
-| `score_stddev` | 0.4253 over 80 candidate scores |
-| `candidate_margin` | 0.48 |
-| `candidate_wins` | 29/40 |
+| `score_stddev`     | 0.4253 over 80 candidate scores |
+| `candidate_margin` | 0.48                            |
+| `candidate_wins`   | 29/40                           |
 
 The champion in that run is the compiled reference module. It is a
 teaching example rather than the production scorer, so those columns
@@ -767,10 +776,10 @@ which needs BYTE equality. The same gate with one doubled space in the
 answer — the same words, the same numbers, the same meaning — scored
 0.5000 on two of the 40:
 
-| question | truth | self-match | with one doubled space |
-| --- | --- | ---: | ---: |
-| q09 | `CVE-2021-44228 has a severity rating of CRITICAL.` | 1.0000 | 0.5000 |
-| q36 | `INVOICE 2024-001` | 1.0000 | 0.5000 |
+| question | truth                                               | self-match | with one doubled space |
+| -------- | --------------------------------------------------- | ---------: | ---------------------: |
+| q09      | `CVE-2021-44228 has a severity rating of CRITICAL.` |     1.0000 |                 0.5000 |
+| q36      | `INVOICE 2024-001`                                  |     1.0000 |                 0.5000 |
 
 Both truths carry two numbers, and the anti-spray divisor counted both
 of them against an answer that simply repeated the truth. Nothing in
@@ -800,14 +809,14 @@ returns the words around a value keeps its 0.0.
 Six of the 40 rows scored 0.0000 for BOTH candidates, so they gave the
 node nothing to compare:
 
-| question | ground truth | good | bad |
-| --- | --- | ---: | ---: |
-| q02 | `{"verdict":"phishing","confidence":0.97}` | 0.0000 | 0.0000 |
-| q07 | `{"grade":"A","protocol":"TLS 1.3"}` | 0.0000 | 0.0000 |
-| q09 | `CVE-2021-44228 has a severity rating of CRITICAL.` | 0.0000 | 0.0000 |
-| q10 | `{"cve":"CVE-2021-44228","severity":"critical","cvss":9.8}` | 0.0000 | 0.0000 |
-| q14 | `{"label":"negative","score":0.88}` | 0.0000 | 0.0000 |
-| q23 | `{"verdict":"false","sources":3}` | 0.0000 | 0.0000 |
+| question | ground truth                                                |   good |    bad |
+| -------- | ----------------------------------------------------------- | -----: | -----: |
+| q02      | `{"verdict":"phishing","confidence":0.97}`                  | 0.0000 | 0.0000 |
+| q07      | `{"grade":"A","protocol":"TLS 1.3"}`                        | 0.0000 | 0.0000 |
+| q09      | `CVE-2021-44228 has a severity rating of CRITICAL.`         | 0.0000 | 0.0000 |
+| q10      | `{"cve":"CVE-2021-44228","severity":"critical","cvss":9.8}` | 0.0000 | 0.0000 |
+| q14      | `{"label":"negative","score":0.88}`                         | 0.0000 | 0.0000 |
+| q23      | `{"verdict":"false","sources":3}`                           | 0.0000 | 0.0000 |
 
 Dispatch rule 6 is the cause: the truth holds a quantity, the answer
 holds none, so the answer scores 0.0. In these rows the quantity is a
@@ -824,24 +833,24 @@ same benchmark, seven vectors move and all seven are `good` answers
 rising off the floor:
 
 | question | weather band | label band |
-| --- | ---: | ---: |
-| q02 good | 0.0000 | 0.2000 |
-| q07 good | 0.0000 | 0.1667 |
-| q09 good | 0.0000 | 0.1429 |
-| q10 good | 0.0000 | 0.1429 |
-| q14 good | 0.0000 | 0.2000 |
-| q22 good | 0.0000 | 0.2500 |
-| q23 good | 0.0000 | 0.2500 |
+| -------- | -----------: | ---------: |
+| q02 good |       0.0000 |     0.2000 |
+| q07 good |       0.0000 |     0.1667 |
+| q09 good |       0.0000 |     0.1429 |
+| q10 good |       0.0000 |     0.1429 |
+| q14 good |       0.0000 |     0.2000 |
+| q22 good |       0.0000 |     0.2500 |
+| q23 good |       0.0000 |     0.2500 |
 
 No `bad` answer moves, so nothing on this benchmark was paid that was
 not paid before.
 
-| band | `worst_self_match` | `score_stddev` | `candidate_margin` | `candidate_wins` |
-| --- | ---: | ---: | ---: | ---: |
-| weather | 1.0000 | 0.4253 | 0.48 | 29/40 |
-| price | 1.0000 | 0.4272 | 0.48 | 29/40 |
-| onchain | 1.0000 | 0.4250 | 0.44 | 29/40 |
-| label | 1.0000 | 0.4140 | 0.51 | 36/40 |
+| band    | `worst_self_match` | `score_stddev` | `candidate_margin` | `candidate_wins` |
+| ------- | -----------------: | -------------: | -----------------: | ---------------: |
+| weather |             1.0000 |         0.4253 |               0.48 |            29/40 |
+| price   |             1.0000 |         0.4272 |               0.48 |            29/40 |
+| onchain |             1.0000 |         0.4250 |               0.44 |            29/40 |
+| label   |             1.0000 |         0.4140 |               0.51 |            36/40 |
 
 The `label` figures are NOT MEASURED in the sense the weather tolerance
 is. They come from this 40-row benchmark, which this repository wrote.
@@ -871,13 +880,13 @@ chooses up to the 1 MiB cap.
 
 Measured under wazero, one `rank_answer` call, fastest of three:
 
-| answer size | before | after | speedup |
-| ---: | ---: | ---: | ---: |
-| 8 KiB | 61,987 us | 462 us | 134x |
-| 16 KiB | 246,555 us | 880 us | 280x |
-| 32 KiB | 987,097 us | 1,729 us | 571x |
-| 64 KiB | 4,012,775 us | 3,264 us | 1229x |
-| 1 MiB (projected) | 1,043,221,173 us | 44,274 us | 23563x |
+|       answer size |           before |     after | speedup |
+| ----------------: | ---------------: | --------: | ------: |
+|             8 KiB |        61,987 us |    462 us |    134x |
+|            16 KiB |       246,555 us |    880 us |    280x |
+|            32 KiB |       987,097 us |  1,729 us |    571x |
+|            64 KiB |     4,012,775 us |  3,264 us |   1229x |
+| 1 MiB (projected) | 1,043,221,173 us | 44,274 us |  23563x |
 
 Cost per doubling of the input: 4.0x before, 1.9x after. The projected
 row extends each column along its own measured curve; at the cap that is

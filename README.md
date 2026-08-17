@@ -36,7 +36,7 @@ production host. Full method, caveats, and reproduction commands are in
 
 The evaluation also reports what it does not show: no known-bad row was reliably
 caught under this ABI, the accuracy correlation is structurally circular, and the
-ranking rests on 10 paired clusters. Section 7 of the evaluation lists the limits
+ranking rests on 10 paired clusters. Section 8 of the evaluation lists the limits
 in full.
 
 ## Layout
@@ -270,8 +270,17 @@ cargo run -p host-runner --release -- \
 
 `corpus/` is not committed — it is 362 MB, almost all of it the raw daemon-feed
 responses kept verbatim so the scoring tools see the exact bytes the daemon
-recorded. Every table in `docs/EVALUATION.md` is regenerated from scratch by the
-commands below, and section 6 of that document lists the full sequence.
+recorded. The commands below rebuild it and regenerate every table in
+[`docs/EVALUATION.md`](docs/EVALUATION.md); section 7 of that document lists the
+full sequence.
+
+**They will not reproduce the same numbers, and cannot.** The daemon feed is a
+live rolling endpoint, so a run today draws different questions over different
+dates from whichever miners are serving traffic now. What is reproducible is the
+method, not the sample: the corpus tables report one snapshot taken in August
+2026, stated as such in section 8. The determinism results are the ones that do
+reproduce exactly, because they need no corpus at all — see **Build and run**
+above, which is three commands from a clean checkout.
 
 ```bash
 # Build the corpus. Fetches the daemon feed and the Open-Meteo archive, then
