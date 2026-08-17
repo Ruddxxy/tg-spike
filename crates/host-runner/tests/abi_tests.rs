@@ -4,9 +4,18 @@
 //! stability, and the malformed input matrix.
 //!
 //! These tests need a compiled `eval-script` `.wasm` file. On a clean
-//! checkout, that file does not exist yet. When a test cannot find it, it
-//! prints a clear message and returns early. It does not fail the test
-//! suite for a missing build artefact.
+//! checkout that file does not exist yet, and these tests FAIL when it is
+//! missing. They used to print a skip message and return early, which
+//! reported `ok` for nine tests that had loaded no module and checked
+//! nothing. A reader running `cargo test --workspace` first, before any
+//! build, saw a green count that was three percent hollow.
+//!
+//! A missing build artefact is a missing build artefact. The failure
+//! message names the exact command that fixes it.
+//!
+//! The `wasm32-wasip1` artefact stays OPTIONAL. It is the artefact that
+//! must never be uploaded, built only when someone wants to drive it
+//! deliberately, so its absence is the normal state and not an error.
 
 use std::path::{Path, PathBuf};
 
@@ -30,42 +39,45 @@ fn wasip1_wasm_path() -> PathBuf {
         .join("target/wasm32-wasip1/release/eval_script.wasm")
 }
 
-/// This gives every `.wasm` path that exists on disk right now, plus a
-/// label for each one. If none exist, it prints a message and gives an
-/// empty list, so a caller can skip its test body.
-fn available_wasm_paths() -> Vec<(&'static str, PathBuf)> {
-    let mut found = Vec::new();
-    for (label, path) in [
-        ("wasm32-unknown-unknown", unknown_unknown_wasm_path()),
-        ("wasm32-wasip1", wasip1_wasm_path()),
-    ] {
-        if path.exists() {
-            found.push((label, path));
-        } else {
-            println!(
-                "skip: no '.wasm' file at {} for target '{label}'. Build eval-script first.",
-                path.display()
-            );
-        }
+/// This gives every `.wasm` path these tests must drive.
+///
+/// The `wasm32-unknown-unknown` artefact is REQUIRED. It is the module
+/// that gets registered, so a test run that cannot find it has proved
+/// nothing and must say so rather than report `ok`. The panic names the
+/// build command.
+///
+/// The `wasm32-wasip1` artefact is OPTIONAL and is added only when it is
+/// already on disk. It is the four-import build that must never be
+/// uploaded; it exists so someone can drive it deliberately, and its
+/// absence is the normal state.
+fn required_wasm_paths() -> Vec<(&'static str, PathBuf)> {
+    let required = unknown_unknown_wasm_path();
+    assert!(
+        required.exists(),
+        "no eval-script '.wasm' at {}.\n\
+         These tests drive a real compiled module and cannot run without one.\n\
+         Build it first:\n\
+         \n    cargo build --release --target wasm32-unknown-unknown -p eval-script\n",
+        required.display()
+    );
+
+    let mut found = vec![("wasm32-unknown-unknown", required)];
+
+    let optional = wasip1_wasm_path();
+    if optional.exists() {
+        found.push(("wasm32-wasip1", optional));
+    } else {
+        println!(
+            "note: no wasm32-wasip1 build at {}. That target is optional; skipping it.",
+            optional.display()
+        );
     }
     found
 }
 
-/// This macro-like helper skips a test body when no `.wasm` file exists,
-/// instead of failing the test.
-macro_rules! skip_if_none {
-    ($paths:expr) => {
-        if $paths.is_empty() {
-            println!("skip: no eval-script '.wasm' file found. This test needs a build first.");
-            return;
-        }
-    };
-}
-
 #[test]
 fn export_surface_is_exactly_alloc_dealloc_and_rank_answer() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     for (label, wasm_path) in &paths {
         let instance = ScriptInstance::load(wasm_path)
@@ -86,8 +98,7 @@ fn export_surface_is_exactly_alloc_dealloc_and_rank_answer() {
 
 #[test]
 fn golden_vectors_match_by_bit_equality() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     let golden_path = cases::golden_vectors_path();
     let vectors = cases::load_golden_vectors(&golden_path)
@@ -128,8 +139,7 @@ fn golden_vectors_match_by_bit_equality() {
 
 #[test]
 fn rank_answer_is_bit_stable_across_1000_runs() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     let gt = br#"{"label": 1}"#;
     let ma = br#"{"confidence": 0.75}"#;
@@ -149,8 +159,7 @@ fn rank_answer_is_bit_stable_across_1000_runs() {
 
 #[test]
 fn malformed_inputs_all_return_worst_score_and_never_trap() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     let matrix = cases::malformed_cases();
     let worst_bits = 0.0_f32.to_bits();
@@ -186,8 +195,7 @@ fn malformed_inputs_all_return_worst_score_and_never_trap() {
 /// small scale so the test suite stays fast.
 #[test]
 fn fresh_instance_matches_reused_instance() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     let gt = br#"{"label": 0}"#;
     let ma = br#"{"confidence": 0.25}"#;
@@ -237,8 +245,7 @@ fn golden_vectors_file_is_readable() {
 /// timing gain alone does not prove that; only this page count does.
 #[test]
 fn rejected_oversized_alloc_does_not_grow_linear_memory() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     let oversized = vec![b'x'; (cases::MAX_INPUT_BYTES + 1) as usize];
 
@@ -278,8 +285,7 @@ fn rejected_oversized_alloc_does_not_grow_linear_memory() {
 /// rejected request.
 #[test]
 fn valid_cycle_after_a_rejected_alloc_still_gives_the_right_golden_vector_score() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     let golden_path = cases::golden_vectors_path();
     let vectors = cases::load_golden_vectors(&golden_path)
@@ -332,8 +338,7 @@ fn valid_cycle_after_a_rejected_alloc_still_gives_the_right_golden_vector_score(
 /// over the cap, not a size at the cap.
 #[test]
 fn alloc_at_exactly_the_cap_succeeds_through_the_real_module() {
-    let paths = available_wasm_paths();
-    skip_if_none!(paths);
+    let paths = required_wasm_paths();
 
     let at_cap = vec![b'x'; cases::MAX_INPUT_BYTES as usize];
 
