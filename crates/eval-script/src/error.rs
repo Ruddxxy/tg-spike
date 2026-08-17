@@ -13,30 +13,18 @@ use core::fmt;
 /// worst score, 0.0, so no variant can reach a caller as anything but
 /// 0.0. Rust code inside the crate can match on the variant to find
 /// the exact cause.
+///
+/// Every variant below is constructed somewhere. An earlier version of
+/// this crate scored a JSON label against a JSON confidence, and six
+/// variants belonged to that model: `InvalidJson`, `MissingField`,
+/// `WrongType`, `OutOfRange`, `InvalidLabel` and `InvalidConfidence`.
+/// The model is gone, both inputs are now short texts holding one value
+/// each, and there is no JSON to parse or field to look up. Those six
+/// were removed rather than left as failures that cannot occur.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoreError {
     /// The input bytes are not valid UTF-8 text.
     InvalidUtf8,
-    /// The input text is not valid JSON.
-    InvalidJson,
-    /// The JSON value does not have a field the code needs.
-    ///
-    /// The value names the missing field.
-    MissingField(&'static str),
-    /// A JSON field has the wrong JSON type.
-    ///
-    /// The value names the field with the wrong type.
-    WrongType(&'static str),
-    /// A JSON field holds a number that is out of the valid range.
-    ///
-    /// The value names the field that is out of range.
-    OutOfRange(&'static str),
-    /// The `label` field is not the integer 0 or the integer 1.
-    InvalidLabel,
-    /// The `confidence` field is not a finite number.
-    ///
-    /// This covers NaN, positive infinity, and negative infinity.
-    InvalidConfidence,
     /// A pointer and length pair points outside the linear memory.
     BadPointer,
     /// A pointer plus a length overflows a 32-bit integer.
@@ -57,24 +45,6 @@ impl fmt::Display for ScoreError {
         match self {
             ScoreError::InvalidUtf8 => {
                 write!(f, "the input bytes are not valid UTF-8 text")
-            }
-            ScoreError::InvalidJson => {
-                write!(f, "the input text is not valid JSON")
-            }
-            ScoreError::MissingField(name) => {
-                write!(f, "the JSON value does not have the field \"{name}\"")
-            }
-            ScoreError::WrongType(name) => {
-                write!(f, "the field \"{name}\" has the wrong JSON type")
-            }
-            ScoreError::OutOfRange(name) => {
-                write!(f, "the field \"{name}\" holds a value that is out of range")
-            }
-            ScoreError::InvalidLabel => {
-                write!(f, "the label field is not the integer 0 or the integer 1")
-            }
-            ScoreError::InvalidConfidence => {
-                write!(f, "the confidence field is not a finite number in range")
             }
             ScoreError::BadPointer => {
                 write!(
@@ -107,12 +77,6 @@ mod tests {
     fn every_variant_has_a_display_message() {
         let variants = [
             ScoreError::InvalidUtf8,
-            ScoreError::InvalidJson,
-            ScoreError::MissingField("label"),
-            ScoreError::WrongType("label"),
-            ScoreError::OutOfRange("confidence"),
-            ScoreError::InvalidLabel,
-            ScoreError::InvalidConfidence,
             ScoreError::BadPointer,
             ScoreError::PointerOverflow,
             ScoreError::AllocFailed,

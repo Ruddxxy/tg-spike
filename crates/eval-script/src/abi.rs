@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn finish_clamps_error_and_bad_values_to_worst_score() {
-        assert_eq!(finish(Err(ScoreError::InvalidJson)), 0.0);
+        assert_eq!(finish(Err(ScoreError::InvalidUtf8)), 0.0);
         assert_eq!(finish(Ok(0.5)), 0.5);
         assert_eq!(finish(Ok(f64::NAN)), 0.0);
         assert_eq!(finish(Ok(f64::INFINITY)), 0.0);

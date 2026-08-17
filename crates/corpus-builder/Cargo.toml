@@ -12,5 +12,9 @@ serde = { version = "1", features = ["derive"] }
 # `miner_answer` byte-pinned to what the daemon actually sent.
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
-ureq = { version = "2", features = ["json"] }
+# ureq's "json" feature is NOT enabled. Every response body here is
+# read as text and handed to serde_json directly, so into_json and
+# send_json are never called and the feature pulled in a code path
+# nothing used.
+ureq = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }

@@ -16,6 +16,10 @@ eval-script = { path = "../eval-script" }
 corpus-builder = { path = "../corpus-builder" }
 # The geocoder and the archive are plain HTTP GETs. This is the same
 # client corpus-builder uses, so the two agree on TLS and timeouts.
-ureq = { version = "2", features = ["json"] }
+# ureq's "json" feature is NOT enabled. Every response body here is
+# read as text and handed to serde_json directly, so into_json and
+# send_json are never called and the feature pulled in a code path
+# nothing used.
+ureq = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
