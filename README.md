@@ -100,11 +100,11 @@ Script registration is per-intent, so a per-intent variant is a separate registe
 binary. A band is a cargo feature, so what it changes is folded in at compile time —
 no configuration input, no extra ABI argument, no runtime branch.
 
-| Band      |   `t` | Intents                                                              | Basis                                     |
-| --------- | ----: | -------------------------------------------------------------------- | ----------------------------------------- |
-| `weather` |  0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST`                                  | **measured** against the 6,169-row corpus |
-| `price`   | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA` | **reasoned, not measured**                |
-| `onchain` |  0.15 | `GAS_PRICE`, `TVL_LOOKUP`                                            | **reasoned, not measured**                |
+| Band      |   `t` | Intents                                                                                                                                               | Basis                                     |
+| --------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `weather` |  0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST`                                                                                                                   | **measured** against the 6,169-row corpus |
+| `price`   | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA`                                                                                  | **reasoned, not measured**                |
+| `onchain` |  0.15 | `GAS_PRICE`, `TVL_LOOKUP`                                                                                                                             | **reasoned, not measured**                |
 | `label`   |  0.03 | `URL_SCAN`, `SSL_VERIFICATION`, `CVE_LOOKUP`, `SENTIMENT_ANALYSIS`, `TEXT_CLASSIFICATION`, `CONTENT_MODERATION`, `FACT_CHECK`, `LANGUAGE_TRANSLATION` | **reasoned, not measured**                |
 
 Only the weather band has evidence behind it. The others are starting points argued
@@ -215,11 +215,14 @@ implemented here.
 
 ## Build and run
 
-Rust stable with the `wasm32-unknown-unknown` target, and Go 1.21+ for the wazero
-host.
+Rust stable with the `wasm32-unknown-unknown` target, and Go 1.25+ for the wazero
+host. `tools/build-variants.sh` also needs `wasm-tools` and `python3`, and it
+refuses to run without them: `wasm-tools` is what reads the import list, and an
+import check that cannot run is worse than no import check.
 
 ```bash
 rustup target add wasm32-unknown-unknown
+cargo install wasm-tools          # needed by tools/build-variants.sh
 ```
 
 The cross-host check needs the wazero result file to exist first, so run in this

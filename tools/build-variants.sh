@@ -18,11 +18,42 @@
 # WASI imports. Registering that artefact fails with "module[env] not
 # instantiated". Every band below is checked for zero imports, and the
 # check is the last word: an artefact that does not pass it is removed.
+#
+# The import check counts lines: `wasm-tools print | grep -c '(import'`.
+# With wasm-tools absent that pipeline counts zero lines of no output
+# and the gate reads the 0 as "zero imports", so the check PASSES on
+# every artefact including a 4-import one. The gate must never fail
+# open, so the prerequisite check below runs before any band builds.
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
+
+# --- prerequisites ------------------------------------------------------
+#
+# Checked before the first build, not at first use. A missing tool must
+# stop the script, never weaken a check inside it.
+for TOOL in wasm-tools python3; do
+  if ! command -v "$TOOL" >/dev/null 2>&1; then
+    echo "error: $TOOL is not on PATH, and this script needs it."
+    case "$TOOL" in
+      wasm-tools)
+        echo "  wasm-tools reads the import and export lists. Without it the"
+        echo "  import gate counts zero imports for every artefact and passes"
+        echo "  a module that would be rejected at registration."
+        echo "  install: cargo install wasm-tools"
+        ;;
+      python3)
+        echo "  python3 derives the per-band golden file from that band's own"
+        echo "  wazero run, which is how the price and onchain bands get a"
+        echo "  wasmtime-versus-wazero check at all."
+        echo "  install: your platform's python3 package"
+        ;;
+    esac
+    exit 1
+  fi
+done
 
 TARGET_WASM="target/wasm32-unknown-unknown/release/eval_script.wasm"
 DIST="dist"
@@ -155,7 +186,7 @@ PY
        --report --module "$OUT" --champion "$CHAMPION" > "$REPORT" 2>&1; then
     grep -E "worst_self_match: |all 40 questions|all 80 candidate scores" "$REPORT" \
       | head -4 | sed 's/^ */stage 2:      /'
-    grep -E "^   gate [1-4] " "$REPORT" | sed 's/^ */stage 1:      /' 
+    grep -E "^   gate [1-4] " "$REPORT" | sed 's/^ */stage 1:      /'
   else
     echo "PROMOTION REPORT FAILED"; FAILED=1
   fi
