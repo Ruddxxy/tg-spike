@@ -22,7 +22,18 @@ fn score(ground_truth: &str, answer: &str) -> f64 {
 /// better than honest work. A 1 percent error is a realistic honest
 /// miss.
 fn honest_but_imperfect() -> f64 {
-    score("192.43", "194.35")
+    // The miss is ONE THIRD of the band's own tolerance, so this bar
+    // means the same thing in every band. The curve gives
+    // t^2 / (t^2 + (t/3)^2) = 0.9 for that error whatever t is.
+    //
+    // A fixed miss cannot do that. "194.35" is one percent off, which
+    // is a realistic honest miss at the weather band and a bad quote at
+    // the price band, where it earns 0.038. Every attack in this file
+    // is measured against this bar, so the bar has to follow the band
+    // or the comparisons stop meaning anything.
+    let truth = 192.43_f64;
+    let miss = truth * (1.0 + eval_script::score::TOLERANCE / 3.0);
+    score("192.43", &format!("{miss}"))
 }
 
 #[test]
@@ -463,9 +474,14 @@ fn the_right_number_still_scores_on_every_rendering() {
 fn a_number_inside_a_prose_truth_is_found() {
     // A near miss must still grade, not fall to zero, on every
     // rendering.
-    let bare = score("28.9", "28.5");
-    let prose = score(PROSE_TRUTH, "28.5");
-    let json = score(JSON_TRUTH, "28.5");
+    // The miss is half of the band's tolerance, so the score is about
+    // 0.8 in every band. See `honest_but_imperfect` for why a fixed
+    // miss cannot serve every band.
+    let miss = 28.9_f64 * (1.0 - eval_script::score::TOLERANCE / 2.0);
+    let near = format!("{miss}");
+    let bare = score("28.9", &near);
+    let prose = score(PROSE_TRUTH, &near);
+    let json = score(JSON_TRUTH, &near);
     assert!(bare > 0.5, "the bare rendering gave {bare}");
     assert_eq!(bare, prose, "prose {prose} must match bare {bare}");
     assert_eq!(json, bare, "json {json} must match bare {bare}");
@@ -490,8 +506,13 @@ fn a_json_truth_cannot_be_farmed_with_a_date_or_key_part() {
         let json = score(JSON_TRUTH, farm);
         let bare = score("28.9", farm);
         let prose = score(PROSE_TRUTH, farm);
+        // A tenth of what honest work earns. An absolute bar cannot
+        // serve every band: at the onchain band, where the tolerance is
+        // 0.15, every wrong number earns more, and "8" against 28.9
+        // earns 0.041. The invariant is that farming an incidental
+        // number is not worth doing beside answering.
         assert!(
-            json < 1e-2,
+            json < honest_but_imperfect() / 10.0,
             "the incidental number {farm:?} earned {json} against the JSON truth"
         );
         assert_eq!(

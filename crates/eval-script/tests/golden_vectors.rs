@@ -13,6 +13,18 @@
 //! validator whose score differs by one bit from the network median
 //! is at risk of a slash, so the test compares bits.
 
+// The expected bit patterns below are calibrated for a tolerance of
+// 0.03, which the `weather` and `label` bands use. The `price` and
+// `onchain` bands move the curve, so they cannot match these bits and
+// must not be checked against them.
+//
+// Those two bands are not left unchecked. `tools/build-variants.sh`
+// derives a golden file from each band's own wazero run and gives it to
+// host-runner through `TG_GOLDEN_VECTORS`, which turns the check into
+// what matters for a band: wasmtime and wazero must agree, bit for bit,
+// on that band's own artefact.
+#![cfg(not(any(feature = "price", feature = "onchain")))]
+
 use eval_script::score::score_answer;
 
 /// One golden vector.

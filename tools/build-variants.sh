@@ -27,6 +27,11 @@ cd "$ROOT" || exit 1
 TARGET_WASM="target/wasm32-unknown-unknown/release/eval_script.wasm"
 DIST="dist"
 GOLDEN_IN="golden_vectors.json"
+# The script the bands are compared against. Override it the hour a new
+# one lands:
+#
+#   CHAMPION=path/to/new.wasm tools/build-variants.sh
+CHAMPION="${CHAMPION:-reference/scoring_module.wasm}"
 FAILED=0
 
 mkdir -p "$DIST"
@@ -41,7 +46,7 @@ band_flags() {
   esac
 }
 
-for BAND in weather price onchain; do
+for BAND in weather price onchain label; do
   banner "BAND: $BAND"
   FLAGS="$(band_flags "$BAND")"
   OUT="$DIST/eval_script_${BAND}.wasm"
@@ -116,13 +121,44 @@ PY
   # shellcheck disable=SC2181
   if [ "${PIPESTATUS[0]}" != "0" ]; then echo "HOST-RUNNER FAILED"; FAILED=1; fi
 
-  # --- structural self-match / cross-match fixtures ---------------------
+  # --- the whole test suite for THIS band -------------------------------
+  #
+  # Not just the structural fixtures. This script used to run
+  # `--test scoring` only, and that hid three tolerance-calibrated
+  # assertions in `adversarial` that failed on the price and onchain
+  # bands for as long as those bands have existed.
   # shellcheck disable=SC2086
-  if cargo test -q -p eval-script --test scoring $FLAGS 2>&1 | tail -3 \
-       | sed 's/^/structural:   /'; then :; fi
-  # shellcheck disable=SC2086
-  cargo test -q -p eval-script --test scoring $FLAGS >/dev/null 2>&1 \
-    || { echo "STRUCTURAL FIXTURES FAILED"; FAILED=1; }
+  if cargo test -q -p eval-script $FLAGS >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    PASSED="$(cargo test -q -p eval-script $FLAGS 2>&1 | grep -c '^test result: ok')"
+    echo "tests:         every eval-script test binary passed ($PASSED of them)"
+  else
+    echo "BAND TEST SUITE FAILED"
+    # shellcheck disable=SC2086
+    cargo test -q -p eval-script $FLAGS 2>&1 | grep -E '^(---- |test result: FAILED)' | head -5
+    FAILED=1
+  fi
+
+  # --- Stage 1 structural checks ---------------------------------------
+  #
+  # The four the promotion pipeline names: the module loads and exports
+  # the ABI (proved above), a blank answer is exactly 0.0, a correct
+  # answer beats an unrelated one, and long or non-ASCII input does not
+  # trap. The harness measures all four through the engine.
+  #
+  # --- Stage 2 numbers --------------------------------------------------
+  #
+  # worst_self_match, score_stddev, candidate_margin and candidate_wins,
+  # for THIS band's artefact against the champion.
+  REPORT="target/promotion-report-${BAND}.txt"
+  if cargo run -q --release -p corpus-eval --example promotion_gates -- \
+       --report --module "$OUT" --champion "$CHAMPION" > "$REPORT" 2>&1; then
+    grep -E "worst_self_match: |all 40 questions|all 80 candidate scores" "$REPORT" \
+      | head -4 | sed 's/^ */stage 2:      /'
+    grep -E "^   gate [1-4] " "$REPORT" | sed 's/^ */stage 1:      /' 
+  else
+    echo "PROMOTION REPORT FAILED"; FAILED=1
+  fi
 done
 
 # Restore the default band in target/.
@@ -143,7 +179,20 @@ else
 fi
 
 banner "ARTEFACTS"
-sha256sum "$DIST"/*.wasm 2>/dev/null || echo "(none)"
+printf '%-14s %-8s %-8s %s\n' band imports exports sha256
+for BAND in weather price onchain label; do
+  OUT="$DIST/eval_script_${BAND}.wasm"
+  if [ ! -f "$OUT" ]; then
+    printf '%-14s %s\n' "$BAND" "MISSING"
+    continue
+  fi
+  IMP="$(wasm-tools print "$OUT" | grep -c '(import' || true)"
+  EXP="$(wasm-tools print "$OUT" | grep -oP '\(export "\K[^"]+' \
+         | grep -vE '^(memory|__data_end|__heap_base)$' | sort | tr '\n' ' ')"
+  EXPOK="no"
+  [ "$EXP" = "alloc dealloc rank_answer " ] && EXPOK="ok"
+  printf '%-14s %-8s %-8s %s\n' "$BAND" "$IMP" "$EXPOK" "$(sha256sum "$OUT" | cut -d" " -f1)"
+done
 
 if [ "$FAILED" != "0" ]; then
   banner "RESULT: FAILED"
