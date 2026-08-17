@@ -556,9 +556,23 @@ fn parse_exponent_form(text: &str) -> Option<ParsedValue> {
     // sign after it.
     let bytes = text.as_bytes();
     let mut marker_at: Option<usize> = None;
+    // Whether any byte before the current one is a digit.
+    //
+    // The test used to read `bytes[..index].iter().any(is_ascii_digit)`,
+    // which walks the whole text in front of EVERY `e`. A miner answer
+    // of `e` repeated fills that with work that grows with the SQUARE of
+    // the answer size, and the miner picks the size up to
+    // `MAX_INPUT_BYTES`. At 128 KiB one call took 16 seconds under
+    // wazero, and the cap is 1 MiB.
+    //
+    // "A digit appears before here" only ever turns from false to true
+    // as the scan moves right, so one accumulator answers the same
+    // question in one pass. The predicate is the same at every index,
+    // so every score keeps the bits it had.
+    let mut digit_seen = false;
     for (index, byte) in bytes.iter().enumerate() {
         if *byte == b'e' || *byte == b'E' {
-            let has_digit_before = index > 0 && bytes[..index].iter().any(|b| b.is_ascii_digit());
+            let has_digit_before = digit_seen;
             let rest = &bytes[index + 1..];
             let has_exponent_after = match rest.first() {
                 Some(b'+') | Some(b'-') => rest.len() > 1 && rest[1].is_ascii_digit(),
@@ -573,6 +587,9 @@ fn parse_exponent_form(text: &str) -> Option<ParsedValue> {
                 }
                 marker_at = Some(index);
             }
+        }
+        if byte.is_ascii_digit() {
+            digit_seen = true;
         }
     }
     let marker = marker_at?;
