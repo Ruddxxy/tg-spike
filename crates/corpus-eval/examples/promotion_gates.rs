@@ -31,16 +31,20 @@
 //! The champion column is `baseline_score`, the native copy of the
 //! reference module in `src/baseline.rs`.
 
-#[path = "../src/baseline.rs"]
-mod baseline;
-
-use baseline::baseline_score;
 use eval_script::score::score_answer;
 
 /// Where `--emit` writes the vectors and `--report` reads the scores.
 const VECTORS_PATH: &str = "target/promotion-vectors.json";
-/// Where the wazero runner writes its scores.
+/// Where the wazero runner writes the scores of the module under test.
 const SCORES_PATH: &str = "target/promotion-wazero.json";
+/// Where the wazero runner writes the champion's scores.
+const CHAMPION_SCORES_PATH: &str = "target/promotion-champion.json";
+/// The champion used when the caller names none.
+///
+/// This is the module the protocol documents ship. Pass `--champion`
+/// with any other `.wasm` to compare against that one instead; nothing
+/// in this file needs to change when a new champion lands.
+const DEFAULT_CHAMPION: &str = "reference/scoring_module.wasm";
 
 /// The honest-miner bar from the weather corpus: the score a correct
 /// miner earns when it is 10 percent out at the weather band.
@@ -602,7 +606,7 @@ fn gates() -> Vec<Gate> {
 /// `host-runner` reads, so both engines score exactly these bytes.
 /// `expected` is a placeholder that the caller fills in from the wazero
 /// run before it asks host-runner for bit equality.
-fn emit() -> std::io::Result<()> {
+fn write_vectors() -> std::io::Result<()> {
     let mut vectors = Vec::new();
     for (index, triple) in TRIPLES.iter().enumerate() {
         let spaced = double_first_space(triple.truth);
@@ -630,34 +634,71 @@ fn emit() -> std::io::Result<()> {
             "expected": 0.0,
         }));
     }
-    let count = vectors.len();
     let document = serde_json::json!({ "vectors": vectors });
     std::fs::write(
         VECTORS_PATH,
         format!("{}\n", serde_json::to_string_pretty(&document)?),
-    )?;
-    println!("wrote {count} vectors to {VECTORS_PATH}");
-    Ok(())
+    )
+}
+
+/// This function runs one module over the vectors and reads its scores.
+///
+/// The module is scored through the same engine golden mode the golden
+/// vector check uses, so a champion needs nothing except the published
+/// ABI. It gives `None`, with a message, when the run fails.
+fn run_module_scores(wasm: &str, out: &str) -> Option<std::collections::HashMap<String, f64>> {
+    // The engine runner runs from its own directory, so a relative path
+    // here needs the step back up to the workspace root.
+    let from_runner = |path: &str| -> String {
+        if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("../../{path}")
+        }
+    };
+
+    let outcome = std::process::Command::new("go")
+        .args([
+            "run",
+            ".",
+            "-golden",
+            &from_runner(VECTORS_PATH),
+            "-a",
+            &from_runner(wasm),
+            "-out",
+            &from_runner(out),
+        ])
+        .current_dir(ENGINE_DIR)
+        .output();
+
+    let outcome = match outcome {
+        Ok(value) => value,
+        Err(error) => {
+            println!("cannot start the engine runner: {error}");
+            return None;
+        }
+    };
+    if !outcome.status.success() {
+        println!(
+            "the engine could not score {wasm}: {}",
+            String::from_utf8_lossy(&outcome.stderr).trim()
+        );
+        return None;
+    }
+
+    let text = std::fs::read_to_string(out).ok()?;
+    let document: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let mut table = std::collections::HashMap::new();
+    for row in document["vectors"].as_array()? {
+        let name = row["name"].as_str()?.to_string();
+        table.insert(name, row["value"].as_f64()?);
+    }
+    Some(table)
 }
 
 // -----------------------------------------------------------------
 // --report
 // -----------------------------------------------------------------
-
-/// This function reads the wazero scores, keyed by vector name.
-fn load_scores() -> std::io::Result<std::collections::HashMap<String, f64>> {
-    let text = std::fs::read_to_string(SCORES_PATH)?;
-    let document: serde_json::Value = serde_json::from_str(&text)?;
-    let mut out = std::collections::HashMap::new();
-    if let Some(rows) = document["vectors"].as_array() {
-        for row in rows {
-            let name = row["name"].as_str().unwrap_or("").to_string();
-            let value = row["value"].as_f64().unwrap_or(-1.0);
-            out.insert(name, value);
-        }
-    }
-    Ok(out)
-}
 
 /// This function doubles the first space in a text.
 ///
@@ -718,8 +759,31 @@ struct Row {
 }
 
 /// This function scores every row and prints the report.
-fn report() -> std::io::Result<()> {
-    let scores = load_scores()?;
+///
+/// `module` is the script under test and `champion` is the script it is
+/// compared against. Both are `.wasm` files and both are scored through
+/// the same engine over the same vectors, so the comparison holds for
+/// any champion. Nothing here knows what either module does inside.
+fn report(module: &str, champion: &str) -> std::io::Result<()> {
+    write_vectors()?;
+
+    println!("module:   {module}");
+    println!("champion: {champion}\n");
+
+    let scores = match run_module_scores(module, SCORES_PATH) {
+        Some(table) => table,
+        None => return Ok(()),
+    };
+    let champion_scores = match run_module_scores(champion, CHAMPION_SCORES_PATH) {
+        Some(table) => table,
+        None => return Ok(()),
+    };
+
+    // The native library in this process was built from one band. It
+    // can only check a module built from that same band, so the check
+    // runs for the default artefact and is skipped, out loud, for any
+    // other.
+    let native_check = module == WASM_PATH;
     let mut rows = Vec::new();
     let mut drift = Vec::new();
 
@@ -727,12 +791,14 @@ fn report() -> std::io::Result<()> {
         let mut fetch = |suffix: &str, answer: &str| -> f64 {
             let key = format!("q{index:02}-{suffix}");
             let from_wasm = *scores.get(&key).unwrap_or(&-1.0);
-            let native = score_answer(triple.question, triple.truth, answer);
-            // An f32 result carries about 7 decimal digits, so the
-            // comparison uses the width of that narrowing and not an
-            // exact equality.
-            if (from_wasm - native).abs() > 1e-6 {
-                drift.push(format!("{key}: wasm {from_wasm:.6} native {native:.6}"));
+            if native_check {
+                let native = score_answer(triple.question, triple.truth, answer);
+                // An f32 result carries about 7 decimal digits, so the
+                // comparison uses the width of that narrowing and not an
+                // exact equality.
+                if (from_wasm - native).abs() > 1e-6 {
+                    drift.push(format!("{key}: wasm {from_wasm:.6} native {native:.6}"));
+                }
             }
             from_wasm
         };
@@ -746,17 +812,23 @@ fn report() -> std::io::Result<()> {
             own_spaced,
             good,
             bad,
-            base_good: baseline_score(triple.truth, triple.good),
-            base_bad: baseline_score(triple.truth, triple.bad),
+            base_good: *champion_scores
+                .get(&format!("q{index:02}-good"))
+                .unwrap_or(&0.0),
+            base_bad: *champion_scores
+                .get(&format!("q{index:02}-bad"))
+                .unwrap_or(&0.0),
         });
     }
 
-    for (index, gate) in gates().iter().enumerate() {
-        let key = format!("gate{index:02}");
-        let from_wasm = *scores.get(&key).unwrap_or(&-1.0);
-        let native = score_answer("", &gate.truth, &gate.answer);
-        if (from_wasm - native).abs() > 1e-6 {
-            drift.push(format!("{key}: wasm {from_wasm:.6} native {native:.6}"));
+    if native_check {
+        for (index, gate) in gates().iter().enumerate() {
+            let key = format!("gate{index:02}");
+            let from_wasm = *scores.get(&key).unwrap_or(&-1.0);
+            let native = score_answer("", &gate.truth, &gate.answer);
+            if (from_wasm - native).abs() > 1e-6 {
+                drift.push(format!("{key}: wasm {from_wasm:.6} native {native:.6}"));
+            }
         }
     }
 
@@ -767,16 +839,51 @@ fn report() -> std::io::Result<()> {
         }
         return Ok(());
     }
-    println!(
-        "wasm and native agree on all {} vectors\n",
-        rows.len() * 4 + gates().len()
-    );
+    if native_check {
+        println!(
+            "wasm and native agree on all {} vectors\n",
+            rows.len() * 4 + gates().len()
+        );
+    } else {
+        println!("the module is not the default artefact, so the native cross-check is off\n");
+    }
 
+    print_stage_one(&rows, &scores);
     print_self_match(&rows);
     print_rows(&rows);
     print_aggregates(&rows);
     print_gates(&scores);
     Ok(())
+}
+
+/// This function prints the four Stage 1 gates as one block.
+///
+/// Stage 1 asks four things of a candidate: that it loads and exports
+/// the ABI, that a blank answer is exactly 0.0, that a correct answer
+/// beats an unrelated one, and that long or non-English input does not
+/// trap. Each line here is measured, not asserted.
+fn print_stage_one(rows: &[Row], scores: &std::collections::HashMap<String, f64>) {
+    let answered = scores.values().filter(|v| **v >= 0.0).count();
+    let blank = *scores.get("gate00").unwrap_or(&-1.0);
+    let whitespace = *scores.get("gate01").unwrap_or(&-1.0);
+    let beats = rows.iter().filter(|r| r.own > r.bad).count();
+    let robust = (0..gates().len())
+        .filter(|index| *scores.get(&format!("gate{index:02}")).unwrap_or(&-1.0) >= 0.0)
+        .count();
+
+    println!("0. Stage 1 gates");
+    println!("   -------------");
+    println!("   gate 1  the module loaded and answered {answered} vectors");
+    println!("   gate 2  blank answer {blank:.4}, whitespace answer {whitespace:.4}");
+    println!(
+        "   gate 3  a correct answer beats an unrelated one on {beats}/{} questions",
+        rows.len()
+    );
+    println!(
+        "   gate 4  {robust}/{} long, emoji and non-ASCII cases returned without a trap",
+        gates().len()
+    );
+    println!();
 }
 
 /// This function prints the self-match gate.
@@ -855,7 +962,7 @@ fn print_self_match(rows: &[Row]) {
 /// This function prints one line per benchmark row.
 fn print_rows(rows: &[Row]) {
     println!("2. the benchmark, 40 rows");
-    println!("   ours = this module, base = the reference word_overlap champion");
+    println!("   ours = the module under test, base = the champion");
     println!(
         "   {:<3} {:<13} {:<5} {:>8} {:>8} {:>8} {:>8}  flag",
         "id", "intent", "shape", "ours+", "ours-", "base+", "base-"
@@ -913,13 +1020,13 @@ fn print_aggregates(rows: &[Row]) {
     println!("3. score_stddev");
     println!("   ------------");
     println!(
-        "   all {} candidate scores      ours {:.4}   word_overlap {:.4}",
+        "   all {} candidate scores      ours {:.4}   champion {:.4}",
         all_ours.len(),
         stddev(&all_ours),
         stddev(&all_base)
     );
     println!(
-        "   text-only subset, {} scores  ours {:.4}   word_overlap {:.4}",
+        "   text-only subset, {} scores  ours {:.4}   champion {:.4}",
         text_ours.len(),
         stddev(&text_ours),
         stddev(&text_base)
@@ -932,7 +1039,7 @@ fn print_aggregates(rows: &[Row]) {
     let zero_ours = all_ours.iter().filter(|v| **v == 0.0).count();
     let zero_base = all_base.iter().filter(|v| **v == 0.0).count();
     println!(
-        "   exact 0.0 scores             ours {}/{}    word_overlap {}/{}",
+        "   exact 0.0 scores             ours {}/{}    champion {}/{}",
         zero_ours,
         all_ours.len(),
         zero_base,
@@ -967,7 +1074,7 @@ fn print_aggregates(rows: &[Row]) {
         .filter(|r| TRIPLES[r.index].text_only && r.base_good > r.base_bad)
         .count();
 
-    println!("4. candidate_margin and candidate_wins, ours vs word_overlap");
+    println!("4. candidate_margin and candidate_wins, ours vs the champion");
     println!("   --------------------------------------------------------");
     println!(
         "   all 40 questions   margin {margin_ours:.2} vs {margin_base:.2}, wins {wins_ours}/40 vs {wins_base}/40"
@@ -1377,8 +1484,20 @@ fn table() -> std::io::Result<()> {
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
     let outcome = match mode.as_str() {
-        "--emit" => emit(),
-        "--report" => report(),
+        "--emit" => write_vectors().inspect(|()| println!("wrote {VECTORS_PATH}")),
+        "--report" => {
+            let args: Vec<String> = std::env::args().collect();
+            let value_of = |flag: &str| -> Option<String> {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|at| args.get(at + 1))
+                    .cloned()
+            };
+            report(
+                &value_of("--module").unwrap_or_else(|| WASM_PATH.to_string()),
+                &value_of("--champion").unwrap_or_else(|| DEFAULT_CHAMPION.to_string()),
+            )
+        }
         "--measure" => {
             let after = std::env::args().nth(2).unwrap_or_default() == "--after";
             if after {
@@ -1389,7 +1508,11 @@ fn main() {
         }
         "--table" => table(),
         _ => {
-            println!("usage: promotion_gates --emit | --report | --measure [--after] | --table");
+            println!(
+                "usage: promotion_gates --emit \
+                 | --report [--module <wasm>] [--champion <wasm>] \
+                 | --measure [--after] | --table"
+            );
             Ok(())
         }
     };
