@@ -252,7 +252,16 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
             // for the same reason: the miner did not answer.
             return 0.0;
         }
-        return score_quantities(&truth_values[..truth_count], &answer_values[..answer_count]);
+        // The divisor needs the truth's numbers INCLUDING the ones
+        // inside quoted strings. See `score_quantities` for why the
+        // two scans differ.
+        let mut truth_lenient = [ZERO_VALUE; MAX_SCANNED_VALUES];
+        let lenient_count = scan_values(ground_truth, &mut truth_lenient);
+        return score_quantities(
+            &truth_values[..truth_count],
+            &truth_lenient[..lenient_count],
+            &answer_values[..answer_count],
+        );
     }
 
     // The ground truth carries no quantity, so this is a text answer.
@@ -269,12 +278,43 @@ const ZERO_VALUE: ParsedValue = ParsedValue {
 /// ground-truth quantities.
 ///
 /// The function keeps the BEST match over every pair, then divides by
-/// the number of DISTINCT quantities the answer gave.
+/// the number of DISTINCT quantities the answer GUESSED.
 ///
 /// The divisor is the anti-spray rule. A miner that lists ten numbers
 /// and hopes one lands keeps one tenth of the score of a miner that
 /// commits to one number. The divisor counts the ANSWER's numbers, not
 /// the ground truth's, because the miner controls only its own answer.
+///
+/// ## Why a number the ground truth holds is not counted
+///
+/// When the answer gives back EVERY quantity the truth holds, the
+/// divisor counts only the answer numbers that the ground truth does
+/// NOT hold. A number the truth already carries is not a guess:
+/// the miner is quoting the truth back, and quoting is what a correct
+/// answer looks like when the truth is a sentence with an identifier or
+/// a date in it.
+///
+/// Without this rule the score of an answer depended on how many
+/// numbers the TRUTH happened to carry, which the miner does not
+/// choose. An answer EQUAL to the truth
+/// "CVE-2021-44228 has a severity rating of CRITICAL." scored 0.5,
+/// because it carried the two numbers of the identifier, and the same
+/// held for "INVOICE 2024-001". Both reached 1.0 only through the
+/// exact-match short circuit above, which needs BYTE equality: one
+/// doubled space took them back to 0.5. A registration check that
+/// compares a self match against the 0.75 floor fails on that, and
+/// nothing here controls how the node builds the answer it sends.
+///
+/// The rule costs the anti-spray rule very little. A spray is a list of
+/// GUESSES, and a guess that misses is still counted. The only numbers
+/// that become free are the ones the truth already holds, and those
+/// cannot raise the best match above what the right number alone
+/// already earns. A spray of five numbers with one right goes from
+/// 0.200 to 0.250.
+///
+/// An answer with NO number never reaches this function. The caller
+/// returns 0.0 before it, so the farm that returns the words around a
+/// value and no value keeps its 0.0.
 ///
 /// A LIMIT worth stating: when the ground truth holds several numbers,
 /// as a JSON rendering with a date does, this function cannot know
@@ -284,7 +324,11 @@ const ZERO_VALUE: ParsedValue = ParsedValue {
 /// would punish an honest miner for the way the ground truth happens
 /// to be rendered, which the miner does not control. The evaluation
 /// report measures this case rather than hiding it.
-fn score_quantities(truth_values: &[ParsedValue], answer_values: &[ParsedValue]) -> f64 {
+fn score_quantities(
+    truth_values: &[ParsedValue],
+    truth_quoted_included: &[ParsedValue],
+    answer_values: &[ParsedValue],
+) -> f64 {
     let mut best = 0.0f64;
     for truth in truth_values {
         for reply in answer_values {
@@ -295,24 +339,67 @@ fn score_quantities(truth_values: &[ParsedValue], answer_values: &[ParsedValue])
         }
     }
 
-    let mut distinct = 0usize;
-    let mut seen = [0.0f64; MAX_SCANNED_VALUES];
-    for reply in answer_values {
-        let stored = distinct.min(seen.len());
-        if seen[..stored].contains(&reply.number) {
-            continue;
-        }
-        if distinct < seen.len() {
-            seen[distinct] = reply.number;
-        }
-        distinct += 1;
-    }
-    if distinct == 0 {
+    if answer_values.is_empty() {
         return 0.0;
     }
 
+    // Does the answer give back EVERY quantity the truth asked for?
+    //
+    // This is the gate on the quoting rule below, and it is what keeps
+    // the rule from paying a wrong answer. An answer that holds every
+    // target holds the wanted value by construction, whatever else it
+    // adds. An answer that holds only SOME of them has guessed, and it
+    // pays the full divisor exactly as it did before.
+    //
+    // The measured case: the truth "INVOICE 2024-001" and the wrong
+    // answer "INVOICE 2024-002". Without this gate the wrong invoice
+    // number kept the 2024 for free and scored 1.0, level with the
+    // right one. With it, the answer misses the 001 target, so it pays
+    // for both of its numbers and scores 0.5.
+    let answer_restates_the_truth = truth_values
+        .iter()
+        .all(|truth| answer_values.iter().any(|r| r.number == truth.number));
+
+    let mut guesses = 0usize;
+    let mut seen = [0.0f64; MAX_SCANNED_VALUES];
+    for reply in answer_values {
+        // A number the ground truth itself holds is a quote, not a
+        // guess. See the doc comment above.
+        //
+        // The test uses the LENIENT scan of the truth, the one that
+        // keeps the digits inside a quoted string. Those digits are not
+        // match TARGETS, and the loop above still cannot score against
+        // them, so the JSON number farm stays shut. But an answer that
+        // restates a JSON truth carries them, and charging the miner
+        // for a digit inside the truth's own key name would bring back
+        // the defect this rule removes: the JSON rendering
+        // {"temperature_2m":28.9,"wind_speed_10m":11.2} scored its own
+        // restatement 0.5, because `temperature_2m` and
+        // `wind_speed_10m` gave the answer a 2 and a 10 to be charged
+        // for.
+        if answer_restates_the_truth
+            && truth_quoted_included
+                .iter()
+                .any(|truth| truth.number == reply.number)
+        {
+            continue;
+        }
+        let stored = guesses.min(seen.len());
+        if seen[..stored].contains(&reply.number) {
+            continue;
+        }
+        if guesses < seen.len() {
+            seen[guesses] = reply.number;
+        }
+        guesses += 1;
+    }
+
+    // An answer that guessed nothing quoted the truth and nothing else,
+    // so it pays no divisor.
+    let divisor = if guesses == 0 { 1 } else { guesses };
+
     // The counts are small, so this conversion is exact.
-    best / (distinct as f64)
+    best / (divisor as f64)
 }
 
 /// This function scores two parsed values against each other.

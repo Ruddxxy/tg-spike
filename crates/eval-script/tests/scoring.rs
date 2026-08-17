@@ -393,6 +393,82 @@ fn a_self_match_beats_an_unrelated_cross_match() {
     }
 }
 
+/// The ground truths whose self match used to depend on byte equality.
+///
+/// Each one carries more than one number, so the anti-spray divisor
+/// charged an answer that repeated the whole truth. The exact-match
+/// short circuit hid that, and the short circuit needs BYTE equality.
+const MULTI_NUMBER_TRUTHS: [&str; 5] = [
+    "CVE-2021-44228 has a severity rating of CRITICAL.",
+    "INVOICE 2024-001",
+    "{\"temperature_2m\":28.9,\"wind_speed_10m\":11.2}",
+    "The high is 31.5 C and the low is 22.4 C.",
+    "Partly true. The programme reduced transmission by 40% over 3 years.",
+];
+
+#[test]
+fn a_self_match_does_not_need_byte_equality() {
+    // The node builds the answer of a self-match check, and nothing
+    // here controls what it does to the text on the way. Every one of
+    // these carries the same words and the same numbers as the truth,
+    // so every one must score the same 1.0.
+    for truth in MULTI_NUMBER_TRUTHS {
+        let doubled_space = match truth.find(' ') {
+            Some(at) => format!("{} {}", &truth[..at], &truth[at..]),
+            None => truth.to_string(),
+        };
+        let variants = [
+            doubled_space,
+            format!("{truth}\n"),
+            format!("  {truth}  "),
+            format!("{truth}\t"),
+        ];
+        for variant in variants {
+            let earned = score_answer("", truth, &variant);
+            assert_eq!(
+                earned, 1.0,
+                "the truth {truth:?} scored {earned} against its own text {variant:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_short_circuit_is_not_what_makes_a_self_match_pass() {
+    // The same check without any whitespace trick: an answer that holds
+    // the truth's numbers and nothing else must reach the 0.75 floor
+    // through the RULES, not through the short circuit. The extra full
+    // stop keeps the two texts from being equal after trim.
+    for truth in MULTI_NUMBER_TRUTHS {
+        let restated = format!("{truth}.");
+        let earned = score_answer("", truth, &restated);
+        assert!(
+            earned >= 0.75,
+            "the truth {truth:?} scored {earned} against a restatement, want 0.75 or more"
+        );
+    }
+}
+
+#[test]
+fn a_spray_still_pays_for_every_wrong_guess() {
+    // Five numbers with one right. The right number is the truth's own,
+    // so it is not a guess; the four wrong ones are. The divisor is
+    // four, not five, and the known cost of the change is exactly this
+    // step from 0.200 to 0.250.
+    let sprayed = score_answer("", "192.43", "192.43 100 200 300 400");
+    assert!(
+        (sprayed - 0.25).abs() < 1e-12,
+        "the spray earned {sprayed}, want 0.25"
+    );
+
+    // A spray that holds nothing the truth holds pays for all of them.
+    let missed = score_answer("", "192.43", "100 200 300 400 500");
+    assert!(
+        missed < 1e-9,
+        "a spray of wrong numbers earned {missed}, want almost nothing"
+    );
+}
+
 #[test]
 fn the_unit_only_farm_still_scores_zero() {
     // The two fixes above must not pay a miner that gives back the
@@ -410,4 +486,33 @@ fn the_unit_only_farm_still_scores_zero() {
             "the farm {farm:?} against {truth:?} earned {earned}, want 0.0"
         );
     }
+}
+
+#[test]
+fn quoting_part_of_the_truth_does_not_buy_the_rest() {
+    // The quoting rule pays only an answer that gives back EVERY
+    // quantity the truth holds. An answer that keeps the identifier and
+    // changes the value has guessed, and it pays for both numbers.
+    let right = score_answer("", "INVOICE 2024-001", "INVOICE 2024-001");
+    let wrong = score_answer("", "INVOICE 2024-001", "INVOICE 2024-002");
+    assert_eq!(right, 1.0, "the right invoice earned {right}");
+    assert!(
+        wrong < right,
+        "the wrong invoice earned {wrong}, level with the right one at {right}"
+    );
+    assert!(
+        (wrong - 0.5).abs() < 1e-12,
+        "the wrong invoice earned {wrong}, want 0.5"
+    );
+
+    // The same shape without an identifier.
+    let partly = score_answer(
+        "",
+        "Order 12345 shipped 3 items",
+        "Order 12345 shipped 9 items",
+    );
+    assert!(
+        partly < 0.75,
+        "echoing the order number with a wrong count earned {partly}"
+    );
 }
