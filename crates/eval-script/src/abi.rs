@@ -13,11 +13,12 @@
 //! the miner answer on the relative error between the two values. See
 //! `rank_answer_impl` for the exact rule order.
 //!
-//! This module also keeps `score`, `score_log_loss`, and
-//! `score_batch` as plain Rust functions. These three functions are
-//! no longer part of the WASM export surface. The crate keeps them
-//! so the existing test suite and any native, host-side caller can
-//! still reach the same metrics directly.
+//! `rank_answer` is the only scoring function in this module. An
+//! earlier version also carried `score`, `score_log_loss` and
+//! `score_batch`, which scored a JSON label against a JSON confidence
+//! under the Brier model. That model is gone and so are all three
+//! functions: they are not exported, not kept as native helpers, and
+//! nothing in the workspace calls them.
 //!
 //! Every function in this module checks its input before it reads
 //! raw memory. A bad pointer must never cause a WASM trap. The
@@ -361,15 +362,14 @@ fn rank_answer_scorer_with_question(
 /// the function signature and in any caller that reads this code.
 ///
 /// Past that, the function reads the ground truth bytes and the
-/// miner answer bytes with `read_bytes`, the same helper `score`
-/// uses. `read_bytes` keeps the `MAX_INPUT_BYTES` cap check and the
-/// bounds check. Any read error, for either input, scores 0.0. Past
-/// a successful read, `rank_answer_scorer` applies the miner answer
-/// rules: invalid UTF-8 scores 0.0, and a blank answer (empty, or
-/// whitespace only) scores exactly 0.0. Any other input runs through
-/// the same `metrics::brier_from_bytes` computation the old `score`
-/// export ran, in `f64`, through this same `run_pair_score` and
-/// `finish` path.
+/// miner answer bytes with `read_bytes`, which keeps the
+/// `MAX_INPUT_BYTES` cap check and the bounds check. Any read error,
+/// for either input, scores 0.0. Past a successful read,
+/// `rank_answer_scorer_with_question` applies the miner answer rules:
+/// invalid UTF-8 scores 0.0, and a blank answer (empty, or whitespace
+/// only) scores exactly 0.0. Any other input runs through
+/// `score::score_answer`, in `f64`, and reaches this function's return
+/// through `finish`.
 ///
 /// The wasm32 export wrapper for this function is `rank_answer`,
 /// further down this module.
@@ -393,11 +393,11 @@ pub fn rank_answer_impl(
     let score = finish(outcome);
 
     // SINGLE NARROWING POINT. This is the only place in this crate
-    // that narrows an `f64` down to an `f32`. `finish`, inside
-    // `run_pair_score`, already clamps `score` into the closed
-    // range 0.0 to 1.0 in `f64`. Every `f64` value in that closed
-    // range narrows to an `f32` value in the same closed range, so
-    // this narrow cannot push the result out of range.
+    // that narrows an `f64` down to an `f32`. The `finish` call on the
+    // line above already clamped `score` into the closed range 0.0 to
+    // 1.0 in `f64`. Every `f64` value in that closed range narrows to
+    // an `f32` value in the same closed range, so this narrow cannot
+    // push the result out of range.
     score as f32
 }
 

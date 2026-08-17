@@ -9,10 +9,10 @@ use core::fmt;
 
 /// This type lists the ways that a parse or a score step can fail.
 ///
-/// The `score`, `score_log_loss`, and `score_batch` functions catch
-/// every `ScoreError` and turn it into the worst score, 0.0. Rust
-/// code inside the crate can match on the variant to find the exact
-/// cause.
+/// `abi::finish` catches every `ScoreError` and turns it into the
+/// worst score, 0.0, so no variant can reach a caller as anything but
+/// 0.0. Rust code inside the crate can match on the variant to find
+/// the exact cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScoreError {
     /// The input bytes are not valid UTF-8 text.

@@ -66,26 +66,33 @@ compile_error!(
 
 /// The relative error that scores one half.
 ///
-/// # THIS IS THE VARIANT POINT
+/// # THIS IS THE MAIN VARIANT POINT
 ///
-/// This constant is the ONE thing a per-intent variant of this script
-/// changes. Script registration is per-intent, so a different intent
-/// runs a different registered binary. A variant therefore needs no
+/// This constant is what three of the four bands change, and nothing
+/// else. Script registration is per-intent, so a different intent runs
+/// a different registered binary. A variant therefore needs no
 /// configuration system, no extra input field, and no change to the
 /// ABI. The band is a cargo feature, so the value is folded into the
 /// curve at compile time and the shipped module holds no branch on it.
+///
+/// The fourth band, `label`, is the exception and it does NOT change
+/// this constant. It changes one dispatch rule instead: a truth that
+/// carries a number no longer makes a number mandatory. See
+/// `answer_without_a_quantity` below for that rule and for what it
+/// costs. Read "the variant point" as "the tolerance variant point".
 ///
 /// The curve is `score = t^2 / (t^2 + e^2)`, where `e` is the relative
 /// error and `t` is this constant. At `e == t` the score is exactly
 /// 0.5.
 ///
-/// # The three bands
+/// # The four bands
 ///
-/// | band | `t` | intents |
-/// | --- | --- | --- |
-/// | `weather` | 0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST` |
-/// | `price` | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA` |
-/// | `onchain` | 0.15 | `GAS_PRICE`, `TVL_LOOKUP` |
+/// | band | `t` | changes | intents |
+/// | --- | --- | --- | --- |
+/// | `weather` | 0.03 | the curve | `WEATHER_CHECK`, `WEATHER_FORECAST` |
+/// | `price` | 0.002 | the curve | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA` |
+/// | `onchain` | 0.15 | the curve | `GAS_PRICE`, `TVL_LOOKUP` |
+/// | `label` | 0.03 | dispatch rule 6 | `URL_SCAN`, `SSL_VERIFICATION`, `CVE_LOOKUP`, `SENTIMENT_ANALYSIS`, `TEXT_CLASSIFICATION`, `CONTENT_MODERATION`, `FACT_CHECK`, `LANGUAGE_TRANSLATION` |
 ///
 /// ## `weather = 0.03` is MEASURED
 ///
