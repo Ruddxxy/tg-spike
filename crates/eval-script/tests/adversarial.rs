@@ -219,12 +219,32 @@ fn precision_spam_earns_no_more_than_the_plain_answer() {
 #[test]
 fn a_range_answer_pays_the_many_numbers_penalty() {
     // "34 to 36" holds two numbers, so it is not one clean value.
+    //
+    // The rule being tested is the anti-spray divisor: the hedge earns
+    // the best of its candidates divided by how many it offered. Both
+    // 34 and 36 are one unit out from 35, so the best candidate scores
+    // exactly what the committed answer "34" scores, and the hedge
+    // pays half of it. Asserting that identity states the rule and
+    // holds in every band.
+    //
+    // The bar used to be a flat `range < 0.55`. That is a claim about
+    // the weather band wearing no label: the hedge earns 0.0024 at the
+    // price band and 0.4825 at the onchain band, so the same literal
+    // meant "beaten by 230x" in one band and "beaten by 1.14x" in
+    // another, and an onchain tolerance of 0.2 would have failed a
+    // scorer that was working correctly.
     let range = score("35", "34 to 36");
+    let committed = score("35", "34");
     let exact = score("35", "35");
+
     assert_eq!(exact, 1.0);
     assert!(
-        range < 0.55,
-        "a hedged range earned {range}, which is too close to a committed answer"
+        (range - committed / 2.0).abs() < 1e-12,
+        "a hedge of two candidates earned {range}, want half of the committed {committed}"
+    );
+    assert!(
+        range < exact,
+        "a hedged range earned {range}, which is not below the committed {exact}"
     );
 }
 

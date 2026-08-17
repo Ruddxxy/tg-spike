@@ -26,10 +26,28 @@ fn branch_a_trailing_zero_is_the_same_number() {
 
 #[test]
 fn branch_a_a_near_miss_keeps_almost_all_of_its_score() {
-    let near = score("192.43", "192.44");
+    // "Near" has to mean something in the band being built, so the miss
+    // is ONE HUNDREDTH of the band's own tolerance. The curve gives
+    // t^2 / (t^2 + (t/100)^2) = 10000/10001 = 0.99990 for that error
+    // whatever t is, so the bar below is the same statement in every
+    // band rather than a number that happens to hold in one.
+    //
+    // A fixed miss cannot do that. This test used to score "192.44"
+    // against "192.43" and require 0.999. One cent is t/577 at the
+    // weather band and t/38 at the price band, so the same two strings
+    // asked for very different things: weather cleared the bar by
+    // 0.000997 and price by 0.000325. At t = 0.001 price would fail on
+    // a scorer that was working correctly.
+    //
+    // The one-cent case itself is not lost. `golden_vectors.json` pins
+    // it by exact f32 bit pattern as `numeric_one_cent_out`, which is a
+    // stronger check than this one and is calibrated for t = 0.03.
+    let truth = 192.43_f64;
+    let miss = truth * (1.0 + eval_script::score::TOLERANCE / 100.0);
+    let near = score("192.43", &format!("{miss}"));
     assert!(
-        near > 0.999,
-        "one cent out gave {near}, want a score above 0.999"
+        near > 0.9999,
+        "a miss of one hundredth of the tolerance gave {near}, want above 0.9999"
     );
 }
 
