@@ -40,11 +40,15 @@ func main() {
 	goldenPath := flag.String("golden", "", "path to a golden vector JSON file, turns on golden mode")
 	outPath := flag.String("out", "", "output path for golden mode or corpus mode result")
 	corpusPath := flag.String("corpus", "", "path to prepared corpus rows, turns on corpus mode")
+	timingPath := flag.String("timing", "", "path to a vector JSON file, turns on timing mode")
+	repeats := flag.Int("repeats", 3, "timed runs per vector in timing mode, fastest one wins")
 	flag.Parse()
 
 	ctx := context.Background()
 
 	switch {
+	case *timingPath != "":
+		runTimingMode(ctx, *timingPath, *pathA, *outPath, *repeats)
 	case *corpusPath != "":
 		runCorpusMode(ctx, *pathA, *pathB, *corpusPath, *outPath)
 	case *goldenPath != "":
@@ -70,6 +74,24 @@ func runCorpusMode(ctx context.Context, oursPath, refPath, corpusPath, outPath s
 		fail("corpus mode needs -out <path to write jsonl>")
 	}
 	if err := scoreCorpus(ctx, oursPath, refPath, corpusPath, outPath); err != nil {
+		fail(err.Error())
+	}
+}
+
+// runTimingMode checks timing mode flags, then times rank_answer for
+// every vector. It exits with status 1 and a clean message on any flag
+// or run error.
+func runTimingMode(ctx context.Context, vectorsPath, wasmPath, outPath string, repeats int) {
+	if wasmPath == "" {
+		fail("timing mode needs -a <path to wasm file>")
+	}
+	if outPath == "" {
+		fail("timing mode needs -out <path to write json>")
+	}
+	if repeats < 1 {
+		fail("timing mode needs -repeats of 1 or more")
+	}
+	if err := runTiming(ctx, vectorsPath, wasmPath, outPath, repeats); err != nil {
 		fail(err.Error())
 	}
 }
