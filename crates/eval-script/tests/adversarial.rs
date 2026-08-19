@@ -568,18 +568,18 @@ fn a_json_truth_self_match_beats_an_unrelated_cross_match() {
 /// This test guards the exception that keeps a quoted real value.
 ///
 /// A rendering that quotes its value, as `{"temperature_2m":"28.9 C"}`
-/// does, must still score. The admission test is `parse_value`, so a
-/// quoted string that is one clean value keeps its number while a
-/// quoted timestamp does not.
+/// does, must still score. The admission test is `parse_value` on the
+/// WHOLE string, so a quoted string that IS one clean value keeps its
+/// number while a quoted timestamp does not.
 #[test]
 fn a_quoted_value_in_a_json_truth_still_scores() {
     for quoted in [
-        // The whole string is one clean value.
         "{\"temperature_2m\":\"28.9 C\"}",
         "{\"temperature_2m\":\"28.9\"}",
-        // The string wraps one value in a sentence. The number still
-        // stands on its own, so it is not part of a word.
-        "{\"summary\":\"28.9 C in Paris\"}",
+        // parse_value handles the surrounding whitespace and the unit
+        // suffix itself, so these need no special case here.
+        "{\"temperature_2m\":\" 28.9 \"}",
+        "{\"temperature_2m\":\"28.9C\"}",
     ] {
         assert_eq!(
             score(quoted, "28.9"),
@@ -592,9 +592,61 @@ fn a_quoted_value_in_a_json_truth_still_scores() {
             "a near miss against {quoted:?} left the bare rendering"
         );
     }
-    // The rule must not pay the scaffolding of the string it admits.
-    // The `label` band answers this case through the text path by
-    // design, so the assertion belongs to the numeric bands.
-    #[cfg(not(feature = "label"))]
-    assert_eq!(score("{\"summary\":\"28.9 C in Paris\"}", "summary"), 0.0);
+}
+
+/// This test states the price of admitting only a string that IS a
+/// value.
+///
+/// A string that CONTAINS a number is text, and its number is not a
+/// match target. That closes the farm below, and it costs the case the
+/// old rule was written for: a value wrapped in a sentence.
+///
+/// The two are the same shape -- a number, then words -- so no test on
+/// the string's syntax separates them. The farm is the one that had to
+/// go.
+#[test]
+fn a_number_inside_a_quoted_phrase_is_not_a_match_target() {
+    // THE FARM. Every one of these paid a WRONG answer 1.0000 while an
+    // honest miner 10 percent out earned 0.0831.
+    for (truth, farm) in [
+        ("{\"status\":\"HTTP 200\",\"temperature_2m\":28.1}", "200"),
+        (
+            "{\"summary\":\"3 alerts active\",\"temperature_2m\":28.1}",
+            "3",
+        ),
+        ("{\"note\":\"revision 4\",\"temperature_2m\":28.1}", "4"),
+        ("{\"station\":\"KJFK 12\",\"temperature_2m\":28.1}", "12"),
+        ("{\"city\":\"Paris 2026\",\"temperature_2m\":28.1}", "2026"),
+        ("{\"window\":\"6 hours\",\"temperature_2m\":28.1}", "6"),
+    ] {
+        let paid = score(truth, farm);
+        assert!(
+            paid < 0.0831,
+            "the farm answer {farm:?} earned {paid} against {truth:?}, \
+             at or above the honest bar of 0.0831"
+        );
+        // The real value still scores in full on the same truth.
+        assert_eq!(
+            score(truth, "28.1"),
+            1.0,
+            "the correct answer lost its score against {truth:?}"
+        );
+    }
+
+    // THE PRICE. The only quantity sits inside a sentence in a quoted
+    // string, so this truth now carries no quantity at all and falls to
+    // the text branch. The correct answer scored 1.0 before this rule.
+    // The `label` band reaches the same branch by its own dispatch
+    // rule, so it reads the same here.
+    let wrapped = "{\"summary\":\"28.9 C in Paris\"}";
+    let correct = score(wrapped, "28.9");
+    assert!(
+        correct < 1.0,
+        "this assertion records a COST, not a gain: {correct}"
+    );
+    // The scaffolding must not be paid more than the real answer is.
+    assert!(
+        score(wrapped, "summary") <= correct,
+        "the scaffolding out-earned the value"
+    );
 }

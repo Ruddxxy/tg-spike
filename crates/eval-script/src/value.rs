@@ -960,58 +960,61 @@ fn is_json_shaped(text: &str) -> bool {
     )
 }
 
-/// This function tells if a character can be part of a word.
+/// This function tells if a quoted string IS a value.
 ///
-/// The set is an ASCII letter and the underscore. A digit is NOT in the
-/// set, because a digit next to a digit is part of the same numeric run
-/// and never reaches this test.
-fn is_word_char(character: char) -> bool {
-    character.is_ascii_alphabetic() || character == '_'
-}
-
-/// This function tells if a quoted string holds a quantity rather than
-/// text that merely contains digits.
+/// The test is `parse_value`, the module's existing strict reader, on
+/// the whole string. Nothing else. A string it accepts is a quantity
+/// and keeps its number as a match target; every other string is text.
 ///
-/// There are two ways a quoted string reads as a value, and a string
-/// that meets either one keeps its number:
+/// # The property, and the weaker test that was here before
 ///
-/// 1. The whole string is one clean value by `parse_value`, the
-///    module's existing strict reader. This covers `"28.9 C"`,
-///    `"-5.2"`, `"$192.43"` and `"2026"` on its own.
-/// 2. The string holds exactly ONE numeric run, and that run stands on
-///    its own rather than sitting inside a word. This covers a value
-///    wrapped in a sentence, as `"28.9 C in Paris"` is.
+/// The property this rule needs is "the string IS a value". An earlier
+/// version also accepted a string that CONTAINS one numeric run
+/// standing on its own, so that a value wrapped in a sentence, as
+/// `"28.9 C in Paris"` is, would keep its number.
 ///
-/// Everything else is text. The two shapes this rule is built to reject
-/// are the two the corpus produces:
-/// - `"temperature_2m"` has one run, but the `2` is glued between `_`
-///   and `m`, so it is part of a field name.
-/// - `"2026-08-10T12:00"` has five runs, so it names an instant, not a
-///   quantity.
+/// Those are different properties, and the second one is a farm. It
+/// admits every string that carries an incidental number:
 ///
-/// Neither half of the rule looks at a number's magnitude, so neither
-/// can be aimed at a chosen value.
+/// | quoted string | admitted by the weak test | answer | score |
+/// | --- | --- | --- | --- |
+/// | `"HTTP 200"` | yes | `200` | 1.0000 |
+/// | `"3 alerts active"` | yes | `3` | 1.0000 |
+/// | `"revision 4"` | yes | `4` | 1.0000 |
+/// | `"KJFK 12"` | yes | `12` | 1.0000 |
+/// | `"Paris 2026"` | yes | `2026` | 1.0000 |
+/// | `"6 hours"` | yes | `6` | 1.0000 |
+///
+/// Against a truth whose real value is a temperature, each of those
+/// paid a WRONG answer a perfect score, while an honest miner 10
+/// percent out earned 0.0831.
+///
+/// # Why there is no middle ground
+///
+/// `"28.9 C in Paris"` and `"200 OK"` have the same shape: a value,
+/// then words. A rule that admits the first admits the second, and
+/// `"3 alerts active"`, `"6 hours"` and `"2 of 3"` with it. No test on
+/// the string's SYNTAX separates them, because the difference between
+/// them is meaning. So the strict property is the only one that can be
+/// stated, and the cost is real and is recorded: a JSON truth whose
+/// only quantity sits inside a sentence in a quoted string now carries
+/// no quantity, and falls to the text branch.
+///
+/// The rule never looks at a number's magnitude, so it cannot be aimed
+/// at a chosen value.
+///
+/// # What it rejects, and what it keeps
+///
+/// Rejected: `"temperature_2m"`, a field name whose `2` is glued
+/// inside a word. `"2026-08-10T12:00"`, which names an instant. Every
+/// row of the table above.
+///
+/// Kept: `"28.9"`, `"28.9 C"`, `"28.9C"`, `" -5.2 "`, `"$192.43"`,
+/// `"12 gwei"`, `"2026"` on its own. `parse_value` already handles the
+/// surrounding whitespace and the unit suffix, so this function needs
+/// no trimming and no unit list of its own.
 fn quoted_string_reads_as_a_value(inner: &str) -> bool {
-    if parse_value(inner).is_some() {
-        return true;
-    }
-    let mut runs = [
-        NumericRun { start: 0, end: 0 },
-        NumericRun { start: 0, end: 0 },
-    ];
-    if find_numeric_runs(inner, &mut runs) != 1 {
-        return false;
-    }
-    let run = runs[0];
-    let before_is_word = match inner.get(..run.start) {
-        Some(before) => before.chars().next_back().is_some_and(is_word_char),
-        None => true,
-    };
-    let after_is_word = match inner.get(run.end..) {
-        Some(after) => after.chars().next().is_some_and(is_word_char),
-        None => true,
-    };
-    !before_is_word && !after_is_word
+    parse_value(inner).is_some()
 }
 
 /// This function records every quoted string whose digits are TEXT.
