@@ -8,10 +8,10 @@ the artefact you are about to register against its row.
 
 | band | imports | exports | size | sha256 |
 | --- | ---: | --- | ---: | --- |
-| `weather` | 0 | ok | 64620 | `85608d410d75c44fbd6679f70ff00bb3272441d8cd772f92d7b6ae11477ab894` |
-| `price` | 0 | ok | 64620 | `72736dad244fa04d6d79e0e76e399d472bef38d68af36477acdc4893d1562903` |
-| `onchain` | 0 | ok | 64620 | `04903822729a4ed5ac2362df73043324c02ed62c5c45d2a4688a4dd068c2a70f` |
-| `label` | 0 | ok | 64685 | `bc1dbc4c0607bef2c939e181d699f0729aa5ec57839cfedc3f1238a9456fab52` |
+| `weather` | 0 | ok | 64810 | `b101aa8e5870a329bbdc9a6602b0df29e274431ae86414e1b2a6671a49fcb3f2` |
+| `price` | 0 | ok | 64810 | `58c7f38f44419a6ba0d1d5a97b1d402a04d04f8fe223dd6401798dd696bfa4f4` |
+| `onchain` | 0 | ok | 64810 | `a8df404386ee07db87407c72d14c641c7f1baded28583011fb109197cd1769c9` |
+| `label` | 0 | ok | 64875 | `08edbdb6159475185ce4449c80ecf641557f531302f098daf70d390991204679` |
 
 Every row above passed: exactly three scored exports, zero imports,
 golden-vector agreement, wasmtime/wazero bit-equality, its band's full

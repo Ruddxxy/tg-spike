@@ -293,6 +293,87 @@ pub fn overlap_score(ground_truth: &TokenSet, answer: &TokenSet) -> f64 {
     (shared as f64) / (union as f64)
 }
 
+/// This function scores an answer against a ground truth, charging a
+/// substitution more than an omission.
+///
+/// # The attack this closes
+///
+/// `overlap_score` divides by the union, so an answer that gives back
+/// the ground truth's wording and changes the ONE word that carries the
+/// meaning keeps almost all of its score, while the correct bare answer
+/// keeps almost none:
+///
+/// ```text
+/// truth  "Paris is the capital of France."
+/// good   "Paris"                              1 shared of 6   0.1667
+/// bad    "Lyon is the capital of France."     5 shared of 7   0.7143
+/// ```
+///
+/// The wrong answer scores four times the right one. That is not a
+/// near miss, it is a different claim wearing the truth's clothes.
+///
+/// # The rule
+///
+/// A token the answer LEAVES OUT is cheap. The answer said less than
+/// it could have, which is an omission and not a false claim.
+///
+/// A token the answer ASSERTS that the ground truth does not hold is
+/// expensive, and it is the more expensive the more of the truth the
+/// answer gave back around it. Echoing five of six tokens and putting
+/// something else in the sixth place is a substitution: the answer is
+/// not missing the payload, it is CONTRADICTING it.
+///
+/// So the charge is `1 - recall`, and it applies only when the answer
+/// both leaves something out AND asserts something foreign. An answer
+/// that leaves nothing out is an elaboration, not a substitution, and
+/// pays nothing: `"definitely malicious"` against `"malicious"` is
+/// untouched.
+///
+/// # Why recall, and not the overlap score itself
+///
+/// The charge has to be blind to answer length, or the miner escapes it
+/// by padding. Recall is `shared / truth`, and the answer's own length
+/// is not in it, so junk words cannot move the charge. Every measure
+/// that does read the answer's length is evadable: charging `1 - overlap`
+/// instead lets the attack above reach 0.148 by adding twelve filler
+/// words, which beats the 0.125 the correct answer earns. Under this
+/// rule the same attack peaks at 0.0972 with no padding at all, and
+/// every filler word the miner adds makes it worse.
+///
+/// # What this cannot do
+///
+/// A correct answer that reproduces most of the truth, drops at least
+/// one token and adds wording of its own is charged as a substitution,
+/// because in a bag of tokens that is exactly what a substitution looks
+/// like. Telling the two apart needs to know which word carries the
+/// meaning, and nothing in `(question, ground_truth, answer)` says.
+///
+/// The result can only be lower than `overlap_score`, never higher, so
+/// this rule cannot pay a farm that the union divisor already closed.
+pub fn substitution_score(ground_truth: &TokenSet, answer: &TokenSet) -> f64 {
+    let base = overlap_score(ground_truth, answer);
+    if ground_truth.is_empty() || answer.is_empty() {
+        return base;
+    }
+    let shared = intersection_size(ground_truth, answer);
+    let foreign = answer.len() - shared;
+    let missing = ground_truth.len() - shared;
+
+    // No foreign token: the answer asserted nothing the truth denies.
+    // No missing token: the answer gave back everything and then some,
+    // which is an elaboration. Neither is a substitution.
+    if foreign == 0 || missing == 0 {
+        return base;
+    }
+
+    // The counts are small, so both conversions are exact, and the
+    // division and the subtraction are each one correctly rounded
+    // IEEE-754 operation. No host maths library is involved, so every
+    // engine returns the same bits.
+    let recall = (shared as f64) / (ground_truth.len() as f64);
+    base * (1.0 - recall)
+}
+
 /// This function tells if two texts disagree about negation.
 ///
 /// The function compares the parity of the negation marker counts. An

@@ -31,7 +31,7 @@
 //! difference in a score is a consensus failure, and the validator
 //! that differs gets slashed.
 
-use crate::text::{negation_disagrees, overlap_score, tokenize};
+use crate::text::{negation_disagrees, overlap_score, substitution_score, tokenize};
 use crate::value::{
     parse_value, scan_truth_values, scan_values, Family, ParsedValue, Unit, MAX_SCANNED_VALUES,
 };
@@ -595,7 +595,11 @@ fn score_two_texts(ground_truth: &str, answer: &str) -> f64 {
         return 0.0;
     }
 
-    overlap_score(&truth_tokens, &answer_tokens)
+    // Case G: the answer gives back the truth's wording and puts
+    // something else where the payload was. That is a substitution, not
+    // a partial answer, and it is charged as one. See
+    // `substitution_score`.
+    substitution_score(&truth_tokens, &answer_tokens)
 }
 
 /// This function tells if the answer is a copy of the question.
