@@ -758,6 +758,40 @@ struct Row {
     base_bad: f64,
 }
 
+/// How a case comes out when a TIE COUNTS AS A LOSS.
+///
+/// The node's published bar makes this the only classification that
+/// matters. Three rejected entries carried margins of 0.71, 0.36 and
+/// 0.31 and every one of them was rejected at 31 wins out of 32, while
+/// the champion holds 32 out of 32. A candidate that fails to separate
+/// one single case is out, whatever its average margin is.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Verdict {
+    /// `good` and `bad` scored the same, so this module separated
+    /// nothing. This is a LOSS, not a draw.
+    Dead,
+    /// `bad` outscored `good`. Worse than dead: the wrong answer won.
+    Inverted,
+    /// `good` outscored `bad`. This is the only outcome that counts.
+    Win,
+}
+
+/// This function classifies one module's own separation on one case.
+///
+/// It reads one module's two scores and nothing else. `candidate_wins`
+/// and `champion_wins` are both computed this way, which is what lets
+/// the champion hold 32/32 against every entry: the number is a
+/// property of one module on the fixture set, not of a head to head.
+fn verdict(good: f64, bad: f64) -> Verdict {
+    if good > bad {
+        Verdict::Win
+    } else if good < bad {
+        Verdict::Inverted
+    } else {
+        Verdict::Dead
+    }
+}
+
 /// This function scores every row and prints the report.
 ///
 /// `module` is the script under test and `champion` is the script it is
@@ -765,6 +799,41 @@ struct Row {
 /// the same engine over the same vectors, so the comparison holds for
 /// any champion. Nothing here knows what either module does inside.
 fn report(module: &str, champion: &str) -> std::io::Result<()> {
+    let Some((rows, scores)) = build_rows(module, champion)? else {
+        return Ok(());
+    };
+
+    print_stage_one(&rows, &scores);
+    print_self_match(&rows);
+    print_rows(&rows);
+    print_aggregates(&rows);
+    print_gates(&scores);
+    Ok(())
+}
+
+/// This function prints the tie report, the one the promotion bar
+/// turns on.
+fn ties(module: &str, champion: &str) -> std::io::Result<()> {
+    let Some((rows, _scores)) = build_rows(module, champion)? else {
+        return Ok(());
+    };
+    print_ties(&rows);
+    print_comparable(&rows);
+    print_margin_check(&rows);
+    Ok(())
+}
+
+/// This function scores every vector through both modules and pairs the
+/// results up into one row per question.
+///
+/// `--report` and `--ties` both read the same rows from the same engine
+/// run, so the two modes can never disagree about a number. It gives
+/// `None` when a module could not be scored, having already said why.
+#[allow(clippy::type_complexity)]
+fn build_rows(
+    module: &str,
+    champion: &str,
+) -> std::io::Result<Option<(Vec<Row>, std::collections::HashMap<String, f64>)>> {
     write_vectors()?;
 
     println!("module:   {module}");
@@ -772,11 +841,11 @@ fn report(module: &str, champion: &str) -> std::io::Result<()> {
 
     let scores = match run_module_scores(module, SCORES_PATH) {
         Some(table) => table,
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let champion_scores = match run_module_scores(champion, CHAMPION_SCORES_PATH) {
         Some(table) => table,
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     // The native library in this process was built from one band. It
@@ -837,7 +906,7 @@ fn report(module: &str, champion: &str) -> std::io::Result<()> {
         for line in &drift {
             println!("  {line}");
         }
-        return Ok(());
+        return Ok(None);
     }
     if native_check {
         println!(
@@ -848,12 +917,226 @@ fn report(module: &str, champion: &str) -> std::io::Result<()> {
         println!("the module is not the default artefact, so the native cross-check is off\n");
     }
 
-    print_stage_one(&rows, &scores);
-    print_self_match(&rows);
-    print_rows(&rows);
-    print_aggregates(&rows);
-    print_gates(&scores);
-    Ok(())
+    Ok(Some((rows, scores)))
+}
+
+/// This function prints the tie analysis, which is the number the
+/// published bar actually turns on.
+///
+/// The node reports `champion_margin` 0.37360683 and `champion_wins`
+/// 32/32 against every entry, and it rejected three entries whose
+/// margins were 0.71, 0.36 and 0.31 at 31 wins out of 32. So margin
+/// does not buy a pass and one unseparated case is fatal. What decides
+/// promotion is the count of cases this module fails to WIN OUTRIGHT.
+fn print_ties(rows: &[Row]) {
+    println!("1. TIES, the count that decides promotion");
+    println!("   --------------------------------------");
+    println!("   A tie is a LOSS. Rejected entries carried margins of 0.71, 0.36");
+    println!("   and 0.31 and every one lost at 31/32 wins.\n");
+    println!(
+        "   {:<5} {:>9} {:>9} {:>9}  {:<9} {:>9} {:<9}",
+        "q", "good", "bad", "margin", "verdict", "champion", "champ"
+    );
+
+    let mut dead = Vec::new();
+    let mut both_zero = Vec::new();
+    let mut inverted = Vec::new();
+    let mut equals_champion = Vec::new();
+
+    for row in rows {
+        let ours = verdict(row.good, row.bad);
+        let theirs = verdict(row.base_good, row.base_bad);
+        let margin = row.good - row.bad;
+        let champion_margin = row.base_good - row.base_bad;
+
+        // "Our score equals the champion's" on a case means neither
+        // module pulled ahead of the other on it. Compared on the
+        // margin, because the margin is what the node averages.
+        let level_with_champion = margin == champion_margin;
+        if level_with_champion {
+            equals_champion.push(row.index);
+        }
+
+        match ours {
+            Verdict::Dead => {
+                dead.push(row.index);
+                if row.good == 0.0 && row.bad == 0.0 {
+                    both_zero.push(row.index);
+                }
+            }
+            Verdict::Inverted => inverted.push(row.index),
+            Verdict::Win => {}
+        }
+
+        let mark = match ours {
+            Verdict::Dead if row.good == 0.0 => "DEAD 0.0",
+            Verdict::Dead => "DEAD",
+            Verdict::Inverted => "INVERTED",
+            Verdict::Win => "win",
+        };
+        // The champion column says whether this case can discriminate
+        // at all. A case the champion also fails to separate is one
+        // this benchmark cannot use to predict a verdict.
+        let champion_mark = match theirs {
+            Verdict::Win => "win",
+            Verdict::Dead => "DEAD",
+            Verdict::Inverted => "INVERTED",
+        };
+        let flag = if level_with_champion {
+            " = champion"
+        } else {
+            ""
+        };
+        println!(
+            "   q{:<4} {:>9.4} {:>9.4} {:>9.4}  {:<9} {:>9.4} {}{}",
+            row.index, row.good, row.bad, margin, mark, champion_margin, champion_mark, flag,
+        );
+    }
+
+    let total = rows.len();
+    let lost = dead.len() + inverted.len();
+    println!();
+    println!("   cases                            {total}");
+    println!(
+        "   DEAD, good == bad                {:<3}  {}",
+        dead.len(),
+        name_list(&dead)
+    );
+    println!(
+        "     of which both exactly 0.0000   {:<3}  {}",
+        both_zero.len(),
+        name_list(&both_zero)
+    );
+    println!(
+        "   INVERTED, bad > good             {:<3}  {}",
+        inverted.len(),
+        name_list(&inverted)
+    );
+    println!(
+        "   margin identical to champion     {:<3}  {}",
+        equals_champion.len(),
+        name_list(&equals_champion)
+    );
+    println!(
+        "   NOT WON, dead + inverted         {:<3}  <-- this is the promotion number",
+        lost
+    );
+    println!();
+}
+
+/// This function renders a list of question indexes as `q07 q09 ...`.
+fn name_list(indexes: &[usize]) -> String {
+    if indexes.is_empty() {
+        return "none".to_string();
+    }
+    indexes
+        .iter()
+        .map(|index| format!("q{index:02}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// This function prints wins against the two denominators that matter.
+///
+/// `comparable_cases` is the count of cases the CHAMPION separates. The
+/// node's champion holds 32 of 32, so on its own fixture set every case
+/// is comparable by this definition and `candidate_wins` is out of the
+/// full set. Our 40 are harder than that: the reference module cannot
+/// separate all of them, so a case it also fails is one this benchmark
+/// cannot use to predict a verdict. Both denominators are printed and
+/// neither is presented as the node's.
+fn print_comparable(rows: &[Row]) {
+    let wins = rows
+        .iter()
+        .filter(|r| verdict(r.good, r.bad) == Verdict::Win)
+        .count();
+    let champion_wins = rows
+        .iter()
+        .filter(|r| verdict(r.base_good, r.base_bad) == Verdict::Win)
+        .count();
+    let comparable: Vec<&Row> = rows
+        .iter()
+        .filter(|r| verdict(r.base_good, r.base_bad) == Verdict::Win)
+        .collect();
+    let wins_comparable = comparable
+        .iter()
+        .filter(|r| verdict(r.good, r.bad) == Verdict::Win)
+        .count();
+
+    println!("2. wins out of comparable_cases");
+    println!("   ----------------------------");
+    println!("   ours,     every case            {wins}/{}", rows.len());
+    println!(
+        "   champion, every case            {champion_wins}/{}",
+        rows.len()
+    );
+    println!(
+        "   ours,     comparable_cases      {wins_comparable}/{}   (cases the champion itself separates)",
+        comparable.len()
+    );
+    println!();
+}
+
+/// The champion margin the node publishes, from the API.
+const PUBLISHED_CHAMPION_MARGIN: f64 = 0.37360683;
+/// The case count the node's fixture set holds, from `champion_wins`.
+const PUBLISHED_CASE_COUNT: usize = 32;
+
+/// This function checks our champion column against the published one.
+///
+/// If the two agree, this harness is measuring what the node measures
+/// and the rest of the report predicts a verdict. If they do not, the
+/// gap says which of the two inputs differs: the fixture set or the
+/// module.
+fn print_margin_check(rows: &[Row]) {
+    let all: f64 = rows.iter().map(|r| r.base_good - r.base_bad).sum::<f64>() / (rows.len() as f64);
+    let separated: Vec<&Row> = rows
+        .iter()
+        .filter(|r| verdict(r.base_good, r.base_bad) == Verdict::Win)
+        .collect();
+    let separated_mean: f64 = separated
+        .iter()
+        .map(|r| r.base_good - r.base_bad)
+        .sum::<f64>()
+        / (separated.len() as f64);
+
+    println!("3. do we reproduce champion_margin = {PUBLISHED_CHAMPION_MARGIN:.8}?");
+    println!("   ------------------------------------------------------");
+    println!(
+        "   published            margin {PUBLISHED_CHAMPION_MARGIN:.8}  wins {PUBLISHED_CASE_COUNT}/{PUBLISHED_CASE_COUNT}"
+    );
+    println!(
+        "   ours, all cases      margin {all:.8}  wins {}/{}",
+        separated.len(),
+        rows.len()
+    );
+    println!(
+        "   ours, separated only margin {separated_mean:.8}  wins {}/{}",
+        separated.len(),
+        separated.len()
+    );
+    println!();
+    let matches = (all - PUBLISHED_CHAMPION_MARGIN).abs() < 1e-8
+        || (separated_mean - PUBLISHED_CHAMPION_MARGIN).abs() < 1e-8;
+    if matches {
+        println!("   REPRODUCED. This harness is measuring the same thing the node is.");
+    } else {
+        println!("   NOT REPRODUCED, and the case count says why before the numbers do.");
+        println!(
+            "   The node averages over {PUBLISHED_CASE_COUNT} cases and this benchmark holds {}.",
+            rows.len()
+        );
+        println!("   A mean over a different set of cases is a different number even when");
+        println!("   the module is byte for byte the same one. The champion column here is");
+        println!("   the reference module from telegraph-examples, so the MODULE is likely");
+        println!("   right and the FIXTURE SET is what differs. These 40 triples were");
+        println!("   written in this repository and the node's 32 are not published.");
+        println!();
+        println!("   That bounds every margin and wins figure in this report: they are");
+        println!("   measured on a harder set than the node's, and they predict the node's");
+        println!("   verdict only in direction, never in value.");
+    }
+    println!();
 }
 
 /// This function prints the four Stage 1 gates as one block.
@@ -1498,6 +1781,19 @@ fn main() {
                 &value_of("--champion").unwrap_or_else(|| DEFAULT_CHAMPION.to_string()),
             )
         }
+        "--ties" => {
+            let args: Vec<String> = std::env::args().collect();
+            let value_of = |flag: &str| -> Option<String> {
+                args.iter()
+                    .position(|a| a == flag)
+                    .and_then(|at| args.get(at + 1))
+                    .cloned()
+            };
+            ties(
+                &value_of("--module").unwrap_or_else(|| WASM_PATH.to_string()),
+                &value_of("--champion").unwrap_or_else(|| DEFAULT_CHAMPION.to_string()),
+            )
+        }
         "--measure" => {
             let after = std::env::args().nth(2).unwrap_or_default() == "--after";
             if after {
@@ -1511,6 +1807,7 @@ fn main() {
             println!(
                 "usage: promotion_gates --emit \
                  | --report [--module <wasm>] [--champion <wasm>] \
+                 | --ties [--module <wasm>] [--champion <wasm>] \
                  | --measure [--after] | --table"
             );
             Ok(())
