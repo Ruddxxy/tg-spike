@@ -5,6 +5,15 @@ tools/wazero-runner/wazero-runner
 __pycache__/
 .ruff_cache/
 
+# A real signing key never belongs in the history. `crates/ask-harness`
+# reads ASK_HARNESS_PRIVATE_KEY from the environment, and the natural
+# place to put it is a .env file, so the ignore has to exist BEFORE
+# anyone writes one. `.env.example` is the committed template and is
+# negated below.
+.env
+.env.*
+!.env.example
+
 # The protocol's reference module is built from another repository. It is
 # the default Stage 2 champion; tools/build-variants.sh prints the clone
 # command when it is missing.
