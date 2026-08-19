@@ -396,12 +396,12 @@ const ZERO_VALUE: ParsedValue = ParsedValue {
 /// compares a self match against the 0.75 floor fails on that, and
 /// nothing here controls how the node builds the answer it sends.
 ///
-/// The rule costs the anti-spray rule very little. A spray is a list of
-/// GUESSES, and a guess that misses is still counted. The only numbers
-/// that become free are the ones the truth already holds, and those
-/// cannot raise the best match above what the right number alone
-/// already earns. A spray of five numbers with one right goes from
-/// 0.200 to 0.250.
+/// The rule costs the anti-spray rule NOTHING. A spray is a list of
+/// GUESSES, and a guess that misses is still counted. The exemption
+/// needs the answer to hold every number the truth holds AND no number
+/// it does not, so a spray never reaches it: the numbers it added are
+/// its own. A spray of five numbers with one right pays 0.200, which is
+/// what it paid before this rule existed.
 ///
 /// An answer with NO number never reaches this function. The caller
 /// returns 0.0 before it, so the farm that returns the words around a
