@@ -445,9 +445,29 @@ fn score_quantities(
     // number kept the 2024 for free and scored 1.0, level with the
     // right one. With it, the answer misses the 001 target, so it pays
     // for both of its numbers and scores 0.5.
-    let answer_restates_the_truth = truth_values
+    //
+    // A restatement also ADDS NOTHING. Without that second half the
+    // rule pays the prose farm in full: against the truth 28.1, the
+    // answer "Wind 28.1 kph, temperature 34.9 C." holds every target,
+    // so the 28.1 stopped being charged and only the 34.9 was left in
+    // the divisor. Best match over divisor 1 is 1.0000, and a wrong
+    // answer that names the right number as some OTHER quantity scored
+    // a perfect result against an honest bar of 0.0831. Requiring the
+    // answer to add no number of its own puts that back to 0.5000,
+    // which is what it paid before the quoting rule existed.
+    //
+    // The two halves say the same thing from each side: the answer
+    // holds every number the truth holds, and no number it does not.
+    // That is a restatement. Anything else is a guess and pays.
+    let answer_holds_every_target = truth_values
         .iter()
         .all(|truth| answer_values.iter().any(|r| r.number == truth.number));
+    let answer_adds_no_number = answer_values.iter().all(|reply| {
+        truth_quoted_included
+            .iter()
+            .any(|truth| truth.number == reply.number)
+    });
+    let answer_restates_the_truth = answer_holds_every_target && answer_adds_no_number;
 
     let mut guesses = 0usize;
     let mut seen = [0.0f64; MAX_SCANNED_VALUES];

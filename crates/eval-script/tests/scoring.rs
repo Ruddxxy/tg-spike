@@ -469,14 +469,19 @@ fn the_short_circuit_is_not_what_makes_a_self_match_pass() {
 
 #[test]
 fn a_spray_still_pays_for_every_wrong_guess() {
-    // Five numbers with one right. The right number is the truth's own,
-    // so it is not a guess; the four wrong ones are. The divisor is
-    // four, not five, and the known cost of the change is exactly this
-    // step from 0.200 to 0.250.
+    // Five numbers with one right. All five are guesses and the divisor
+    // is five.
+    //
+    // This briefly read 0.250. The quoting rule that lets a restatement
+    // keep its self-match stopped charging for a number the truth also
+    // holds, and a spray that includes the right number got that number
+    // free. The rule now applies only to an answer that adds NOTHING of
+    // its own, which a spray does by definition, so the concession is
+    // gone and the spray pays the full divisor again.
     let sprayed = score_answer("", "192.43", "192.43 100 200 300 400");
     assert!(
-        (sprayed - 0.25).abs() < 1e-12,
-        "the spray earned {sprayed}, want 0.25"
+        (sprayed - 0.2).abs() < 1e-12,
+        "the spray earned {sprayed}, want 0.2"
     );
 
     // A spray that holds nothing the truth holds pays for all of them.
