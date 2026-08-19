@@ -34,4 +34,9 @@ paths = [
   '''crates/ask-harness/src/eip712\.rs''',
   '''crates/ask-harness/src/sign\.rs''',
   '''crates/ask-harness/src/challenge\.rs''',
+  # The x402 tests in ask.rs assert against the EIP-712 domain separator
+  # the deployed contract returns, the payTo and payer addresses, and the
+  # base64 challenge the devnode sends. Every one of those is a public
+  # value the server publishes to any caller.
+  '''crates/ask-harness/src/ask\.rs''',
 ]
