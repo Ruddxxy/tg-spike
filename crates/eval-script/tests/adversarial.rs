@@ -306,7 +306,83 @@ fn a_junk_question_cannot_be_farmed() {
     // that echoes it must not gain from it.
     let question = "[direct] 207 -> /price";
     let echoed = score_answer(question, "192.43", question);
-    assert!(echoed < 0.15, "echoing a junk question earned {echoed}");
+    assert_eq!(echoed, 0.0, "echoing a junk question earned {echoed}");
+}
+
+#[test]
+fn padding_an_echo_of_the_question_never_escapes_the_check() {
+    // THIS IS WHY THE CHECK READS RECALL AND NOT THE OVERLAP SCORE.
+    //
+    // A threshold on Jaccard falls when the answer grows, so the
+    // attacker escaped it by growing the answer: this junk question
+    // holds `207`, and an echo with ONE word appended parsed as a
+    // number, took the numeric branch, and earned 0.135687 against a
+    // ground truth of 192.43. Recall of the question's tokens divides
+    // by the QUESTION's size, which the miner does not choose, so no
+    // amount of padding moves it.
+    let question = "[direct] 207 -> /price";
+    let truth = "192.43";
+
+    let mut suffixed = String::from(question);
+    for index in 0..10 {
+        suffixed.push_str(" filler");
+        suffixed.push_str(&index.to_string());
+        let earned = score_answer(question, truth, &suffixed);
+        assert_eq!(
+            earned,
+            0.0,
+            "an echo with {} words appended earned {earned}",
+            index + 1
+        );
+    }
+
+    // Prefixed, and interleaved through the middle of the question.
+    for padded in [
+        "zz [direct] 207 -> /price",
+        "zz [direct] 207 -> /price yy",
+        "[direct] zz 207 yy -> /price",
+        "aa bb cc [direct] 207 dd -> ee /price ff gg",
+    ] {
+        let earned = score_answer(question, truth, padded);
+        assert_eq!(earned, 0.0, "the padded echo {padded:?} earned {earned}");
+    }
+}
+
+#[test]
+fn an_honest_answer_that_repeats_the_question_is_not_an_echo() {
+    // The check must fire on an answer that gives back the question and
+    // NOTHING the truth holds. An answer that repeats the question and
+    // then answers it carries the payload, and the payload is a token
+    // the truth holds, so the second half of the rule is false.
+    let question = "temperature in tokyo";
+    let earned = score_answer(question, "34.7 C", "the temperature in tokyo is 34.7 C");
+    assert!(
+        earned > 0.9,
+        "an honest answer that restates the question earned {earned}"
+    );
+
+    // The same shape on the text branch.
+    let question = "sentiment of the review";
+    let earned = score_answer(
+        question,
+        "positive",
+        "the sentiment of the review is positive",
+    );
+    assert!(
+        earned > 0.0,
+        "an honest text answer that restates the question earned {earned}"
+    );
+}
+
+#[test]
+fn a_question_that_is_its_own_answer_still_scores() {
+    // When the truth IS the question, echoing is correct. The
+    // exact-match short circuit runs AFTER this check, so without the
+    // guard the right answer would be zeroed before it got there.
+    assert_eq!(score_answer("34.7 C", "34.7 C", "34.7 C"), 1.0);
+    assert_eq!(score_answer("192.43", "192.43", "192.43"), 1.0);
+    // Same words, one doubled space, so byte equality does not save it.
+    assert_eq!(score_answer("34.7 C", "34.7 C", "34.7  C"), 1.0);
 }
 
 // ---------------------------------------------------------------

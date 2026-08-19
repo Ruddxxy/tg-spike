@@ -31,7 +31,9 @@
 //! difference in a score is a consensus failure, and the validator
 //! that differs gets slashed.
 
-use crate::text::{negation_disagrees, overlap_score, substitution_score, tokenize};
+use crate::text::{
+    intersection_size, negation_disagrees, overlap_score, substitution_score, tokenize,
+};
 use crate::value::{
     parse_value, scan_truth_values, scan_values, Family, ParsedValue, Unit, MAX_SCANNED_VALUES,
 };
@@ -604,10 +606,46 @@ fn score_two_texts(ground_truth: &str, answer: &str) -> f64 {
 
 /// This function tells if the answer is a copy of the question.
 ///
-/// The function returns true when the answer tokens match the question
-/// tokens and the ground truth tokens do not. A question that shares
-/// its wording with the ground truth never triggers this rule, because
-/// then the answer may be right for an honest reason.
+/// The rule has two halves, and an answer must meet both:
+///
+/// 1. The answer gives back EVERY token of the question.
+/// 2. Everything the answer adds beyond the question is FOREIGN to the
+///    ground truth.
+///
+/// An answer that does both repeated the question and supplied nothing
+/// the truth would recognise. That is an echo whatever else it carries.
+///
+/// # Why neither half reads a similarity score
+///
+/// An earlier version asked whether the Jaccard overlap of the question
+/// and the answer was above 0.99. That is a threshold on a similarity
+/// that FALLS when the answer grows, so the attacker escaped it by
+/// growing the answer. Against the real question `[direct] 207 ->
+/// /price` and a ground truth of `192.43`, the echo scored 0.0000 and
+/// the echo with one word appended scored 0.135687 -- the whole of the
+/// defect the check exists to remove, back for one token.
+///
+/// Half 1 reads RECALL of the question's tokens instead. Recall divides
+/// by the QUESTION's size, which the miner does not choose, so padding
+/// the answer cannot move it. This is the same reason
+/// `substitution_score` charges on recall and not on the overlap score.
+///
+/// Half 2 is what keeps an honest answer safe. An answer that repeats
+/// the question and then answers it carries the payload, and the
+/// payload is a token the truth holds, so half 2 is false and the rule
+/// does not fire. Only an answer whose additions are all foreign to the
+/// truth is an echo. Padding cannot help there either: every filler
+/// word an attacker adds is foreign by construction, so it keeps half 2
+/// true rather than escaping it.
+///
+/// # The question that is its own answer
+///
+/// A question that shares its wording with the ground truth never
+/// triggers this rule. When the truth IS the question, echoing is the
+/// correct answer, and half 2 would otherwise be vacuously true for an
+/// answer that gives back the truth exactly. The exact-match short
+/// circuit in `score_answer` runs AFTER this check, so without this
+/// guard a correct answer would be scored 0.0 before it reached it.
 ///
 /// The caller runs this check before the dispatch, so it covers the
 /// numeric branch as well as the text branch. A junk question often
@@ -620,9 +658,25 @@ fn answer_repeats_question(question: &str, ground_truth: &str, answer: &str) -> 
     if question_tokens.is_empty() || answer_tokens.is_empty() {
         return false;
     }
-    let answer_matches_question = overlap_score(&question_tokens, &answer_tokens);
-    let truth_matches_question = overlap_score(&question_tokens, &truth_tokens);
-    answer_matches_question > 0.99 && truth_matches_question < 0.99
+
+    // The truth is the question, so echoing it is the right answer.
+    if overlap_score(&question_tokens, &truth_tokens) > 0.99 {
+        return false;
+    }
+
+    // Half 1: recall of the question, which the answer's length cannot
+    // dilute.
+    let answer_holds_all_of_the_question =
+        intersection_size(&question_tokens, &answer_tokens) == question_tokens.len();
+    if !answer_holds_all_of_the_question {
+        return false;
+    }
+
+    // Half 2: everything past the question is foreign to the truth.
+    answer_tokens
+        .tokens()
+        .iter()
+        .all(|token| question_tokens.contains(token) || !truth_tokens.contains(token))
 }
 
 /// This function turns a relative error into a score.
