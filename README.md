@@ -14,13 +14,13 @@ validator host returns identical bits.
 
 ```
 cargo build --release --target wasm32-unknown-unknown -p eval-script   # first
-306 tests   |   cargo test --workspace
-139 tests   |   cargo test -p eval-script --no-default-features --features label
+317 tests   |   cargo test --workspace
+150 tests   |   cargo test -p eval-script --no-default-features --features label
 ```
 
-The build comes first because nine of the 306 drive the compiled `.wasm`
+The build comes first because nine of the 317 drive the compiled `.wasm`
 through `wasmtime` and fail without it. The `label` line runs the whole
-`eval-script` suite against that band; 7 of its 139 are the band's own tests.
+`eval-script` suite against that band; 7 of its 150 are the band's own tests.
 
 ## Results
 

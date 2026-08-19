@@ -672,6 +672,32 @@ scorer against real corpus renderings found three live defects:
    The copied-question defence ran only in the text branch and never saw
    it. The check now runs before dispatch and covers every branch.
 
+   **That fix was necessary and it was not sufficient.** The check fired
+   on a Jaccard overlap above 0.99, and Jaccard falls when the answer
+   grows, so an attacker escaped it by growing the answer: the echo with
+   ONE word appended scored 0.135687 again — the whole of the defect,
+   back for one token. A threshold on a similarity the attacker can
+   dilute cannot hold.
+
+   The rule now has two halves and an answer must meet both: it gives
+   back EVERY token of the question, and everything it adds beyond the
+   question is FOREIGN to the ground truth. The first half reads
+   RECALL of the question's tokens, which divides by the question's
+   size and therefore does not move when the answer is padded — the
+   same reason the substitution charge reads recall. The second half is
+   what keeps an honest answer safe: an answer that repeats the
+   question and then answers it carries the payload, and the payload is
+   a token the truth holds. Padding cannot escape either half, because
+   every filler word is foreign to the truth by construction.
+
+   Measured: the verbatim echo, the echo with one through ten words
+   appended, prefixed, suffixed and interleaved all score 0.0000, while
+   `the temperature in tokyo is 34.7 C` against the question
+   `temperature in tokyo` scores 1.0. Tests:
+   `padding_an_echo_of_the_question_never_escapes_the_check`,
+   `an_honest_answer_that_repeats_the_question_is_not_an_echo`,
+   `a_question_that_is_its_own_answer_still_scores`.
+
 2. **A prose ground truth could be farmed for 0.667, and a JSON ground
    truth scored a correct answer 0.000.** Both came from one root cause:
    the scorer asked "does the whole string parse as one value?" instead
@@ -702,15 +728,50 @@ scorer against real corpus renderings found three live defects:
    The fix is a syntax rule, in `scan_truth_values`: **in a ground truth
    shaped like a JSON document, a number that sits inside a quoted
    string is text — a key name or an ISO timestamp — and is not a
-   candidate match target, unless the quoted string reads as a value.**
-   A quoted string reads as a value when the whole string parses under
-   `parse_value`, the module's existing strict reader (`"28.9 C"`,
-   `"-5.2"`, `"$192.43"`), or when it holds exactly one number that
-   stands on its own rather than sitting inside a word
-   (`"28.9 C in Paris"`). That second clause is what keeps a legitimate
-   quantity from being dropped; the two shapes it rejects are the two
+   candidate match target, unless the quoted string IS a value.** A
+   quoted string is a value when the whole string parses under
+   `parse_value`, the module's existing strict reader. That admits
+   `"28.9"`, `"28.9 C"`, `"28.9C"`, `" -5.2 "`, `"$192.43"`,
+   `"12 gwei"` and `"2026"`; `parse_value` already handles the
+   surrounding whitespace and the unit suffix, so the rule needs no
+   trimming and no unit list of its own.
+
+   **An earlier version of this clause tested a weaker property and it
+   was a farm.** It also admitted a string that CONTAINS one numeric run
+   standing on its own, so that a value wrapped in a sentence
+   (`"28.9 C in Paris"`) would keep its number. "Is a value" and
+   "contains a number" are different properties, and the second one
+   admits every string carrying an incidental number. Against a truth
+   whose real value is `28.1`, with an honest miner 10% out earning
+   0.0831:
+
+   | ground truth                                  | answer | before |      now |
+   | --------------------------------------------- | ------ | -----: | -------: |
+   | `{"status":"HTTP 200","temperature_2m":28.1}` | `200`  | 1.0000 | 0.000024 |
+   | `{"summary":"3 alerts active",…}`             | `3`    | 1.0000 | 0.001127 |
+   | `{"note":"revision 4",…}`                     | `4`    | 1.0000 | 0.001222 |
+   | `{"station":"KJFK 12",…}`                     | `12`   | 1.0000 | 0.002734 |
+   | `{"city":"Paris 2026",…}`                     | `2026` | 1.0000 | 0.000000 |
+   | `{"window":"6 hours",…}`                      | `6`    | 1.0000 | 0.001453 |
+
+   Six of seven realistic shapes paid a WRONG answer a perfect score.
+   The correct answer `28.1` still scores 1.0000 on every one of them.
+
+   **There is no middle ground, and the strict rule has a price.**
+   `"28.9 C in Paris"` and `"200 OK"` have the same shape — a value,
+   then words — so a rule that admits the first admits the second, and
+   `"3 alerts active"`, `"6 hours"` and `"2 of 3"` with it. The
+   difference between them is meaning, not syntax. So a JSON truth whose
+   ONLY quantity sits inside a sentence in a quoted string now carries
+   no quantity and falls to the text branch, where the correct answer
+   scores 0.3333 rather than 1.0000. That is recorded as a cost, and
+   `a_number_inside_a_quoted_phrase_is_not_a_match_target` asserts both
+   halves of it.
+
+   The two shapes the original rule was written to reject are the two
    the corpus produces, `"temperature_2m"`, whose `2` is glued between
    `_` and `m`, and `"2026-08-10T12:00"`, which holds five numbers.
+   Both are still rejected.
 
    The rule never looks at a number's magnitude, so it cannot be aimed
    at a chosen value. It applies to the GROUND TRUTH only: the answer
@@ -760,9 +821,9 @@ number the two do not agree on.
 | gate               | result                          |
 | ------------------ | ------------------------------- |
 | `worst_self_match` | 1.0000 on all 40, floor is 0.75 |
-| `score_stddev`     | 0.4253 over 80 candidate scores |
-| `candidate_margin` | 0.48                            |
-| `candidate_wins`   | 29/40                           |
+| `score_stddev`     | 0.4201 over 80 candidate scores |
+| `candidate_margin` | 0.56                            |
+| `candidate_wins`   | 34/40                           |
 
 The champion in that run is the compiled reference module. It is a
 teaching example rather than the production scorer, so those columns
@@ -774,17 +835,21 @@ cargo run --release -p corpus-eval --example promotion_gates -- \
   --report --module dist/eval_script_weather.wasm --champion path/to/other.wasm
 ```
 
-### 5.2 Self-match did not survive a doubled space
+### 5.2 Self-match did not survive a doubled space, and now does
+
+**This section reports a defect that is FIXED. Both columns below are
+historical; the current value of every cell in the right-hand column is
+1.0000.**
 
 `worst_self_match` reached 1.0000 through the exact-match short circuit,
 which needs BYTE equality. The same gate with one doubled space in the
 answer — the same words, the same numbers, the same meaning — scored
 0.5000 on two of the 40:
 
-| question | truth                                               | self-match | with one doubled space |
-| -------- | --------------------------------------------------- | ---------: | ---------------------: |
-| q09      | `CVE-2021-44228 has a severity rating of CRITICAL.` |     1.0000 |                 0.5000 |
-| q36      | `INVOICE 2024-001`                                  |     1.0000 |                 0.5000 |
+| question | truth                                               | self-match | doubled space, BEFORE | doubled space, NOW |
+| -------- | --------------------------------------------------- | ---------: | --------------------: | -----------------: |
+| q09      | `CVE-2021-44228 has a severity rating of CRITICAL.` |     1.0000 |                0.5000 |             1.0000 |
+| q36      | `INVOICE 2024-001`                                  |     1.0000 |                0.5000 |             1.0000 |
 
 Both truths carry two numbers, and the anti-spray divisor counted both
 of them against an answer that simply repeated the truth. Nothing in
@@ -804,24 +869,33 @@ Across all 174 vectors of the benchmark, exactly two moved:
 move, because no corpus miner answer holds more than one number, so the
 divisor was already 1 on every one of the 6,169 rows.
 
-The spray it charges for is unchanged in kind and barely changed in
-degree: five numbers with one right went from 0.200 to 0.250. An answer
-with no number at all never reaches the divisor, so the farm that
-returns the words around a value keeps its 0.0.
+The spray it charges for is unchanged, in kind and in degree: five
+numbers with one right pays 0.200, which is what it paid before the
+quoting rule existed. The exemption needs the answer to hold every
+number the truth holds AND no number it does not, and a spray fails the
+second half by construction, so it never reaches the exemption at all.
+An answer with no number never reaches the divisor either, so the farm
+that returns the words around a value keeps its 0.0.
 
 ### 5.3 A truth that carries a number it was not asked for
 
-Six of the 40 rows scored 0.0000 for BOTH candidates, so they gave the
+Five of the 40 rows score 0.0000 for BOTH candidates, so they give the
 node nothing to compare:
 
 | question | ground truth                                                |   good |    bad |
 | -------- | ----------------------------------------------------------- | -----: | -----: |
 | q02      | `{"verdict":"phishing","confidence":0.97}`                  | 0.0000 | 0.0000 |
-| q07      | `{"grade":"A","protocol":"TLS 1.3"}`                        | 0.0000 | 0.0000 |
 | q09      | `CVE-2021-44228 has a severity rating of CRITICAL.`         | 0.0000 | 0.0000 |
 | q10      | `{"cve":"CVE-2021-44228","severity":"critical","cvss":9.8}` | 0.0000 | 0.0000 |
 | q14      | `{"label":"negative","score":0.88}`                         | 0.0000 | 0.0000 |
 | q23      | `{"verdict":"false","sources":3}`                           | 0.0000 | 0.0000 |
+
+A sixth row, q07 `{"grade":"A","protocol":"TLS 1.3"}`, was in this table
+until the quoted-span rule was tightened to admit only a string that IS
+a value. `"TLS 1.3"` names a protocol version, so under the looser rule
+its `1.3` was a quantity, the truth carried a number, and rule 6 zeroed
+the correct answer `A`. It now scores 0.1667 against 0.0000 and is a
+win in every band. See section 4.3.
 
 Dispatch rule 6 is the cause: the truth holds a quantity, the answer
 holds none, so the answer scores 0.0. In these rows the quantity is a
@@ -834,28 +908,30 @@ for the correct `partly true` and 0.0036 for the wrong `60%`. A wrong
 number outranked a right label.
 
 The `label` band changes that one rule and nothing else. Measured on the
-same benchmark, seven vectors move and all seven are `good` answers
-rising off the floor:
+same benchmark, six vectors move and all six are `good` answers rising
+off the floor:
 
 | question | weather band | label band |
 | -------- | -----------: | ---------: |
 | q02 good |       0.0000 |     0.2000 |
-| q07 good |       0.0000 |     0.1667 |
 | q09 good |       0.0000 |     0.1429 |
 | q10 good |       0.0000 |     0.1429 |
 | q14 good |       0.0000 |     0.2000 |
 | q22 good |       0.0000 |     0.2500 |
 | q23 good |       0.0000 |     0.2500 |
 
-No `bad` answer moves, so nothing on this benchmark was paid that was
-not paid before.
+No `bad` answer moves, so nothing on this benchmark is paid that was not
+paid before. The same holds over the full 19,482-vector set: the two
+bands differ on 21 vectors, every one of them a case where the truth
+carries a number and the answer carries none — rule 6's exact
+precondition — and every one raised from exactly 0.0000.
 
 | band    | `worst_self_match` | `score_stddev` | `candidate_margin` | `candidate_wins` |
 | ------- | -----------------: | -------------: | -----------------: | ---------------: |
-| weather |             1.0000 |         0.4253 |               0.48 |            29/40 |
-| price   |             1.0000 |         0.4272 |               0.48 |            29/40 |
-| onchain |             1.0000 |         0.4250 |               0.44 |            29/40 |
-| label   |             1.0000 |         0.4140 |               0.51 |            36/40 |
+| weather |             1.0000 |         0.4201 |               0.56 |            34/40 |
+| price   |             1.0000 |         0.4218 |               0.57 |            34/40 |
+| onchain |             1.0000 |         0.4215 |               0.53 |            34/40 |
+| label   |             1.0000 |         0.4117 |               0.59 |            40/40 |
 
 The `label` figures are NOT MEASURED in the sense the weather tolerance
 is. They come from this 40-row benchmark, which this repository wrote.
