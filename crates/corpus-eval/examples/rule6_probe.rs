@@ -106,7 +106,7 @@ struct Pair {
 /// built at any echo a label case reaches, then no threshold on that
 /// measure separates the two, and the overlap is a property of the
 /// measure rather than of the cases that were picked.
-const FARMS: [Farm; 17] = [
+const FARMS: [Farm; 20] = [
     Farm {
         name: "prose/full-echo",
         question: "[direct] 18 -> /predict",
@@ -219,7 +219,109 @@ const FARMS: [Farm; 17] = [
         truth: "{\"temperature_2m\":28.9,\"city\":\"Tokyo\"}",
         answer: "Tokyo",
     },
+    // CEILING PROBES.
+    //
+    // An attenuated rule pays a fraction of the text branch, so what
+    // the rule can ever pay is that fraction times the LARGEST score
+    // the text branch gives a no-quantity answer. These three find
+    // that largest score. The answer is the whole truth with the
+    // number taken out, so recall of the truth's vocabulary is total
+    // and only the missing number separates the two texts. A longer
+    // truth makes the one missing token a smaller share, so the score
+    // climbs towards 1.0 as the truth grows.
+    Farm {
+        name: "ceiling/5-token",
+        question: "[direct] 18 -> /predict",
+        truth: "The temperature was 28.9 C.",
+        answer: "the temperature was C",
+    },
+    Farm {
+        name: "ceiling/12-token",
+        question: "[direct] 18 -> /predict",
+        truth: "The station at the site reported that the outdoor air temperature was 28.9 C",
+        answer: "the station at site reported that outdoor air temperature was C",
+    },
+    Farm {
+        name: "ceiling/23-token",
+        question: "[direct] 18 -> /predict",
+        truth: "The weather station on the north side of the airport reported that the \
+                outdoor air temperature measured at two metres above ground level was 28.9 C",
+        answer: "The weather station on the north side of the airport reported that the \
+                 outdoor air temperature measured at two metres above ground level was C",
+    },
 ];
+
+/// One honest reference: a miner that gives a real number and is out by
+/// a stated amount.
+///
+/// An attenuated rule is safe only if what it pays stays under what an
+/// honest miner earns, and that figure is not one number. It is the
+/// numeric curve, so it differs per band: at the weather band a miner
+/// 10 percent out earns 0.0826, and at the price band the same 10
+/// percent earns 0.0004 because the price band is calibrated for a
+/// tighter answer. These rows measure that bar on each band instead of
+/// assuming one figure covers all four.
+struct Honest {
+    /// A short name for the table.
+    name: &'static str,
+    /// The question text.
+    question: &'static str,
+    /// The ground truth text.
+    truth: &'static str,
+    /// The answer a real but imperfect miner gives.
+    answer: &'static str,
+    /// How far out the answer is.
+    note: &'static str,
+}
+
+/// The honest references.
+const HONEST: [Honest; 6] = [
+    Honest {
+        name: "temp/10pct",
+        question: "[direct] 211 -> /weather",
+        truth: "The temperature was 28.9 C.",
+        answer: "31.79 C",
+        note: "10 percent out on a temperature",
+    },
+    Honest {
+        name: "temp/3pct",
+        question: "[direct] 211 -> /weather",
+        truth: "The temperature was 28.9 C.",
+        answer: "29.77 C",
+        note: "3 percent out on a temperature",
+    },
+    Honest {
+        name: "price/10pct",
+        question: "[direct] 207 -> /price",
+        truth: "The price is 192.43 USD.",
+        answer: "211.67 USD",
+        note: "10 percent out on a price",
+    },
+    Honest {
+        name: "price/1pct",
+        question: "[direct] 207 -> /price",
+        truth: "The price is 192.43 USD.",
+        answer: "194.35 USD",
+        note: "1 percent out on a price",
+    },
+    Honest {
+        name: "price/02pct",
+        question: "[direct] 207 -> /price",
+        truth: "The price is 192.43 USD.",
+        answer: "192.82 USD",
+        note: "0.2 percent out on a price",
+    },
+    Honest {
+        name: "gas/10pct",
+        question: "[direct] 219 -> /gas",
+        truth: "12 gwei",
+        answer: "13.2 gwei",
+        note: "10 percent out on a gas price",
+    },
+];
+
+/// The bands an attenuated rule has to be safe on.
+const BANDS: [&str; 4] = ["weather", "price", "onchain", "label"];
 
 /// The label side: the six the promotion set loses, as pairs.
 const PAIRS: [Pair; 6] = [
@@ -504,6 +606,15 @@ fn emit() -> std::io::Result<()> {
             }));
         }
     }
+    for (index, honest) in HONEST.iter().enumerate() {
+        vectors.push(serde_json::json!({
+            "name": format!("honest{index:02}"),
+            "question": honest.question,
+            "ground_truth": honest.truth,
+            "miner_answer": honest.answer,
+            "expected": 0.0,
+        }));
+    }
     let document = serde_json::json!({ "vectors": vectors });
     std::fs::write(
         VECTORS_PATH,
@@ -511,14 +622,21 @@ fn emit() -> std::io::Result<()> {
     )?;
     println!("wrote {} vectors to {VECTORS_PATH}", vectors.len());
     println!();
-    println!("now score them with the label band, which is the band that never");
-    println!("fires rule 6, so its score IS the text branch:");
+    println!("Score them with EVERY band. The label band's score is the text");
+    println!("branch, because that band never fires rule 6. The other three give");
+    println!("the honest bar, which is a different number on each band.");
     println!();
-    println!("  cargo build -p eval-script --release --target wasm32-unknown-unknown \\");
-    println!("     --no-default-features --features label");
-    println!("  (cd tools/wazero-runner && go run . -golden ../../{VECTORS_PATH} \\");
-    println!("     -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \\");
-    println!("     -out ../../{LABEL_SCORES_PATH})");
+    for band in BANDS {
+        let flags = if band == "weather" {
+            String::new()
+        } else {
+            format!(" --no-default-features --features {band}")
+        };
+        println!("  cargo build -p eval-script --release --target wasm32-unknown-unknown{flags}");
+        println!("  (cd tools/wazero-runner && go run . -golden ../../{VECTORS_PATH} \\");
+        println!("     -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \\");
+        println!("     -out ../../target/rule6-{band}.json)");
+    }
     Ok(())
 }
 
@@ -740,13 +858,420 @@ fn report() -> std::io::Result<()> {
     Ok(())
 }
 
+// -----------------------------------------------------------------
+// --attenuate
+// -----------------------------------------------------------------
+
+/// This function gives the evidence, in [0,1], that a quantity was the
+/// wanted answer.
+///
+/// It combines the signals the seven triggers used one at a time. None
+/// of them carried enough alone, so each contributes a share rather
+/// than a verdict. The quoted-value signal points the other way, so it
+/// subtracts.
+fn quantity_evidence(question: &str, truth: &str, answer: &str) -> f64 {
+    let mut evidence = 0.0;
+    if c1_question_names_a_quantity(question, truth, answer) {
+        evidence += 0.25;
+    }
+    if c3_quantity_is_the_only_content(question, truth, answer) {
+        evidence += 0.25;
+    }
+    if c6_quantity_has_a_unit(question, truth, answer) {
+        evidence += 0.25;
+    }
+    evidence += 0.25 * echo_recall(truth, answer);
+    if answer_is_a_quoted_value(truth, answer) {
+        evidence -= 0.50;
+    }
+    evidence.clamp(0.0, 1.0)
+}
+
+/// This function tells if a text carries a quantity that `scan_values`
+/// finds.
+///
+/// An answer that carries one never reaches rule 6. Its score comes
+/// from the numeric branch and attenuation cannot change it.
+fn holds_a_value(text: &str) -> bool {
+    let mut values = [ZERO; MAX_SCANNED_VALUES];
+    scan_values(text, &mut values) != 0
+}
+
+/// This function reports whether an attenuated rule 6 can work.
+fn attenuate() -> std::io::Result<()> {
+    let label = load_scores(LABEL_SCORES_PATH)?;
+    let mut bands = std::collections::HashMap::new();
+    for band in BANDS {
+        bands.insert(band, load_scores(&format!("target/rule6-{band}.json"))?);
+    }
+
+    println!("=== AN ATTENUATED RULE 6 ===");
+    println!();
+    println!("Rule 6 returns 0.0 today. An attenuated rule returns");
+    println!();
+    println!("    alpha * the text branch");
+    println!();
+    println!("so a farm and a correct label answer both pay a cost rather than");
+    println!("one of them being killed outright. An answer that carries a value");
+    println!("never reaches rule 6, so its score is the band's numeric score and");
+    println!("no alpha changes it.");
+    println!();
+
+    // The ceiling. What the text branch pays a no-quantity answer at
+    // its very best decides what alpha can ever be.
+    println!("1. the ceiling: the most the text branch pays a no-quantity answer");
+    let mut ceiling = 0.0f64;
+    let mut ceiling_name = "";
+    for (index, farm) in FARMS.iter().enumerate() {
+        let text = *label.get(&format!("farm{index:02}")).unwrap_or(&-1.0);
+        if text > ceiling {
+            ceiling = text;
+            ceiling_name = farm.name;
+        }
+        if farm.name.starts_with("ceiling/") {
+            println!("   {:<24} {:>9.4}", farm.name, text);
+        }
+    }
+    println!(
+        "   {:<24} {:>9.4}  <- the largest of all {} farm rows, {ceiling_name}",
+        "MEASURED CEILING",
+        ceiling,
+        FARMS.len()
+    );
+    println!("   A longer truth pushes this towards 1.0, so treat it as a floor");
+    println!("   on the true ceiling, not the true ceiling.");
+    println!();
+
+    // The honest bar, per band.
+    println!("2. the honest bar, per band");
+    println!("   what a miner earns when it gives a REAL number and is out by:");
+    print!("   {:<20}", "case");
+    for band in BANDS {
+        print!(" {band:>10}");
+    }
+    println!("  note");
+    for (index, honest) in HONEST.iter().enumerate() {
+        print!("   {:<20}", honest.name);
+        for band in BANDS {
+            let value = *bands[band]
+                .get(&format!("honest{index:02}"))
+                .unwrap_or(&-1.0);
+            print!(" {value:>10.6}");
+        }
+        println!("  {}", honest.note);
+    }
+    println!();
+
+    // The window for a CONSTANT alpha, per band.
+    println!("3. the window for a constant alpha");
+    println!("   alpha must be small enough that no farm reaches the honest bar,");
+    println!("   and large enough that a correct label answer still beats a wrong");
+    println!("   one. A band whose window is empty cannot use a constant alpha.");
+    println!();
+    println!(
+        "   {:<9} {:>12} {:>12} {:>12}  window",
+        "band", "bar", "alpha <", "alpha >"
+    );
+    for band in BANDS {
+        // The bar for this band is the weakest honest answer that
+        // should still outrank a non-answer. The 10 percent row is the
+        // one the repository already uses for the weather band.
+        let bar_key = match band {
+            "price" => "honest02", // price/10pct
+            "onchain" => "honest05",
+            _ => "honest00",
+        };
+        let bar = *bands[band].get(bar_key).unwrap_or(&-1.0);
+
+        // alpha must satisfy alpha * text < bar for every farm.
+        let mut alpha_max = f64::INFINITY;
+        for (index, _farm) in FARMS.iter().enumerate() {
+            let text = *label.get(&format!("farm{index:02}")).unwrap_or(&0.0);
+            if text > 0.0 {
+                alpha_max = alpha_max.min(bar / text);
+            }
+        }
+
+        // alpha must satisfy alpha * good_text > bad, for every pair
+        // whose bad answer is scored by the numeric branch. A bad
+        // answer with no value is itself attenuated, so it cancels.
+        let mut alpha_min: f64 = 0.0;
+        for (index, pair) in PAIRS.iter().enumerate() {
+            let good_text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
+            if good_text <= 0.0 {
+                continue;
+            }
+            if holds_a_value(pair.bad) {
+                let bad = *bands[band]
+                    .get(&format!("pair{index:02}-bad"))
+                    .unwrap_or(&0.0);
+                alpha_min = alpha_min.max(bad / good_text);
+            }
+        }
+
+        let open = alpha_min < alpha_max;
+        println!(
+            "   {:<9} {:>12.6} {:>12.6} {:>12.6}  {}",
+            band,
+            bar,
+            alpha_max,
+            alpha_min,
+            if open { "OPEN" } else { "EMPTY" }
+        );
+    }
+    println!();
+
+    // The signal-combined alpha.
+    println!("4. a signal-combined alpha");
+    println!("   alpha = A * (1 - evidence), evidence from the same signals the");
+    println!("   seven triggers used, combined rather than thresholded.");
+    println!();
+    println!(
+        "   {:<24} {:>9} {:>9} {:>9}",
+        "case", "text", "evidence", "1-evid"
+    );
+    for (index, farm) in FARMS.iter().enumerate() {
+        let text = *label.get(&format!("farm{index:02}")).unwrap_or(&-1.0);
+        let evidence = quantity_evidence(farm.question, farm.truth, farm.answer);
+        println!(
+            "   {:<24} {:>9.4} {:>9.4} {:>9.4}",
+            farm.name,
+            text,
+            evidence,
+            1.0 - evidence
+        );
+    }
+    for (index, pair) in PAIRS.iter().enumerate() {
+        let text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&-1.0);
+        let evidence = quantity_evidence(pair.question, pair.truth, pair.good);
+        println!(
+            "   {:<24} {:>9.4} {:>9.4} {:>9.4}  (label good)",
+            pair.name,
+            text,
+            evidence,
+            1.0 - evidence
+        );
+    }
+    println!();
+
+    // The same window question, now with the per-case factor folded in.
+    println!("5. the window for the signal-combined alpha");
+    println!(
+        "   {:<9} {:>12} {:>12} {:>12}  window",
+        "band", "bar", "A <", "A >"
+    );
+    for band in BANDS {
+        let bar_key = match band {
+            "price" => "honest02",
+            "onchain" => "honest05",
+            _ => "honest00",
+        };
+        let bar = *bands[band].get(bar_key).unwrap_or(&-1.0);
+
+        let mut a_max = f64::INFINITY;
+        for (index, farm) in FARMS.iter().enumerate() {
+            let text = *label.get(&format!("farm{index:02}")).unwrap_or(&0.0);
+            let factor = 1.0 - quantity_evidence(farm.question, farm.truth, farm.answer);
+            let effective = text * factor;
+            if effective > 0.0 {
+                a_max = a_max.min(bar / effective);
+            }
+        }
+
+        let mut a_min: f64 = 0.0;
+        for (index, pair) in PAIRS.iter().enumerate() {
+            let good_text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
+            let factor = 1.0 - quantity_evidence(pair.question, pair.truth, pair.good);
+            let effective = good_text * factor;
+            if effective <= 0.0 {
+                continue;
+            }
+            if holds_a_value(pair.bad) {
+                let bad = *bands[band]
+                    .get(&format!("pair{index:02}-bad"))
+                    .unwrap_or(&0.0);
+                a_min = a_min.max(bad / effective);
+            }
+        }
+
+        let open = a_min < a_max;
+        println!(
+            "   {:<9} {:>12.6} {:>12.6} {:>12.6}  {}",
+            band,
+            bar,
+            a_max,
+            a_min,
+            if open { "OPEN" } else { "EMPTY" }
+        );
+    }
+    println!();
+
+    // The distributions, sorted, the way the echo analysis reported.
+    println!("6. the two distributions, sorted");
+    println!("   the text branch pays these, before any alpha:");
+    let mut farm_text: Vec<f64> = (0..FARMS.len())
+        .map(|index| *label.get(&format!("farm{index:02}")).unwrap_or(&-1.0))
+        .collect();
+    let mut good_text: Vec<f64> = (0..PAIRS.len())
+        .map(|index| *label.get(&format!("pair{index:02}-good")).unwrap_or(&-1.0))
+        .collect();
+    farm_text.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    good_text.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("   farm  {farm_text:.4?}");
+    println!("   label {good_text:.4?}");
+    println!();
+    println!("   A constant alpha scales both lists by the same number, so it can");
+    println!("   never move one past the other. What decides the question is not");
+    println!("   whether the lists overlap but whether the WHOLE farm list can be");
+    println!("   pushed under the bar while the label list stays above its own.");
+    println!();
+
+    // The window depends on which honest miner the farm has to lose to.
+    // Section 3 used the 10 percent row because that is the figure the
+    // repository already quotes. That choice is an argument, not a
+    // measurement, so here is the same window against every reference.
+    println!("7. sensitivity: the window against each honest reference");
+    println!("   the bar is an argument about how bad an honest miner may be, so");
+    println!("   the window is recomputed against each one. A band that is open");
+    println!("   against a loose bar and empty against a strict one is open only");
+    println!("   for as long as that argument holds.");
+    println!();
+    println!(
+        "   {:<9} {:<12} {:>12} {:>12} {:>12}  window",
+        "band", "reference", "bar", "alpha <", "alpha >"
+    );
+    for band in BANDS {
+        for (index, honest) in HONEST.iter().enumerate() {
+            let bar = *bands[band]
+                .get(&format!("honest{index:02}"))
+                .unwrap_or(&-1.0);
+            let mut alpha_max = f64::INFINITY;
+            for (farm_index, _farm) in FARMS.iter().enumerate() {
+                let text = *label.get(&format!("farm{farm_index:02}")).unwrap_or(&0.0);
+                if text > 0.0 {
+                    alpha_max = alpha_max.min(bar / text);
+                }
+            }
+            let mut alpha_min: f64 = 0.0;
+            for (pair_index, pair) in PAIRS.iter().enumerate() {
+                let good_text = *label
+                    .get(&format!("pair{pair_index:02}-good"))
+                    .unwrap_or(&0.0);
+                if good_text <= 0.0 || !holds_a_value(pair.bad) {
+                    continue;
+                }
+                let bad = *bands[band]
+                    .get(&format!("pair{pair_index:02}-bad"))
+                    .unwrap_or(&0.0);
+                alpha_min = alpha_min.max(bad / good_text);
+            }
+            println!(
+                "   {:<9} {:<12} {:>12.6} {:>12.6} {:>12.6}  {}",
+                band,
+                honest.name,
+                bar,
+                alpha_max,
+                alpha_min,
+                if alpha_min < alpha_max {
+                    "OPEN"
+                } else {
+                    "EMPTY"
+                }
+            );
+        }
+    }
+    println!();
+
+    // A concrete alpha per band, and what every case then scores.
+    println!("8. a concrete alpha per band, and every case under it");
+    println!("   alpha is the geometric mean of the section 3 window, so it sits");
+    println!("   as far from both walls as the window allows.");
+    println!();
+    for band in BANDS {
+        let bar_key = match band {
+            "price" => "honest02",
+            "onchain" => "honest05",
+            _ => "honest00",
+        };
+        let bar = *bands[band].get(bar_key).unwrap_or(&-1.0);
+        let mut alpha_max = f64::INFINITY;
+        for (index, _farm) in FARMS.iter().enumerate() {
+            let text = *label.get(&format!("farm{index:02}")).unwrap_or(&0.0);
+            if text > 0.0 {
+                alpha_max = alpha_max.min(bar / text);
+            }
+        }
+        let mut alpha_min: f64 = 0.0;
+        for (index, pair) in PAIRS.iter().enumerate() {
+            let good_text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
+            if good_text <= 0.0 || !holds_a_value(pair.bad) {
+                continue;
+            }
+            let bad = *bands[band]
+                .get(&format!("pair{index:02}-bad"))
+                .unwrap_or(&0.0);
+            alpha_min = alpha_min.max(bad / good_text);
+        }
+        if alpha_min >= alpha_max {
+            println!("   {band}: the window is empty, so no alpha is printed");
+            continue;
+        }
+        let alpha = (alpha_min.max(1e-12) * alpha_max).sqrt();
+
+        let mut farm_scores: Vec<f64> = (0..FARMS.len())
+            .map(|index| alpha * *label.get(&format!("farm{index:02}")).unwrap_or(&0.0))
+            .collect();
+        farm_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut good_scores: Vec<f64> = Vec::new();
+        let mut failures = Vec::new();
+        for (index, pair) in PAIRS.iter().enumerate() {
+            let good = alpha * *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
+            let bad = if holds_a_value(pair.bad) {
+                *bands[band]
+                    .get(&format!("pair{index:02}-bad"))
+                    .unwrap_or(&0.0)
+            } else {
+                alpha * *label.get(&format!("pair{index:02}-bad")).unwrap_or(&0.0)
+            };
+            good_scores.push(good);
+            if good <= bad {
+                failures.push(pair.name);
+            }
+        }
+        good_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        println!("   {band}: alpha {alpha:.6}, bar {bar:.6}");
+        println!("      farm  {farm_scores:.6?}");
+        println!("      label {good_scores:.6?}");
+        println!(
+            "      worst farm {:.6}  best farm {:.6}  bar {:.6}  {}",
+            farm_scores.first().copied().unwrap_or(0.0),
+            farm_scores.last().copied().unwrap_or(0.0),
+            bar,
+            if farm_scores.last().copied().unwrap_or(0.0) < bar {
+                "every farm is under the bar"
+            } else {
+                "A FARM REACHES THE BAR"
+            }
+        );
+        if failures.is_empty() {
+            println!("      every label pair separates");
+        } else {
+            println!("      PAIRS THAT DO NOT SEPARATE: {}", failures.join(" "));
+        }
+        println!();
+    }
+    Ok(())
+}
+
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_default();
     let outcome = match mode.as_str() {
         "--emit" => emit(),
         "--report" => report(),
+        "--attenuate" => attenuate(),
         _ => {
-            println!("usage: rule6_probe --emit | --report");
+            println!("usage: rule6_probe --emit | --report | --attenuate");
             Ok(())
         }
     };
