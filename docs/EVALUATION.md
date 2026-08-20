@@ -4,8 +4,13 @@ A Track 2 canonical script for Telegraph. This document reports what the
 script does on real miner traffic, measured against the protocol's
 reference scoring module.
 
-Every table below has a command that reproduces it. Every claim carries
-its sample size.
+Every claim carries its sample size, and every table that reports the
+CURRENT behaviour of the module has a command above it that reproduces
+it. Three tables do not, because they report behaviour that no longer
+exists: the rejected-rule table in section 4.2 measures a rule that is
+not in the tree, and the `before` columns in sections 5.2 and 5.4 need
+the pre-fix source checked out. Each of the three says so where it
+stands.
 
 **On the reference module.** Every "reference" column in this document is
 the protocol's published `word_overlap` module, compiled and run under
@@ -628,7 +633,9 @@ a gas price or a stock price unchanged.
 
 It was dropped, because it failed on both sides at once. Scores below
 are the compiled module under wazero, ground truth in its prose
-rendering, with a three-word window each side:
+rendering, with a three-word window each side. **No command reproduces
+the `rule on` column**, because the rule is not in the tree; it was
+measured before the branch carrying it was dropped.
 
 | answer                                                         | correct? | rule off |    rule on |
 | -------------------------------------------------------------- | -------- | -------: | ---------: |
@@ -862,16 +869,19 @@ cargo run --release -p corpus-eval --example promotion_gates -- \
   --report --module dist/eval_script_weather.wasm --champion path/to/other.wasm
 ```
 
-### 5.2 Self-match did not survive a doubled space, and now does
+### 5.2 The doubled space in a self-match
 
-**This section reports a defect that is FIXED. Both columns below are
-historical; the current value of every cell in the right-hand column is
-1.0000.**
+`worst_self_match` is 1.0000 on all 40 rows, and it is 1.0000 with one
+doubled space in the answer too. It reached that figure through the
+exact-match short circuit, which needs BYTE equality, so the same gate
+with one doubled space — the same words, the same numbers, the same
+meaning — scored 0.5000 on two of the 40 until `4b49bfd` changed the
+divisor:
 
-`worst_self_match` reached 1.0000 through the exact-match short circuit,
-which needs BYTE equality. The same gate with one doubled space in the
-answer — the same words, the same numbers, the same meaning — scored
-0.5000 on two of the 40:
+**No command reproduces the `BEFORE` column.** It measures the tree at
+`8a55480`, before `4b49bfd` changed the divisor, so reproducing it needs
+that commit checked out and the benchmark re-run there. The `NOW` column
+is what `promotion_gates --report` prints today.
 
 | question | truth                                               | self-match | doubled space, BEFORE | doubled space, NOW |
 | -------- | --------------------------------------------------- | ---------: | --------------------: | -----------------: |
