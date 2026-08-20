@@ -114,6 +114,16 @@ fn leaving_a_token_out_is_not_charged() {
         scaffolding, 0.0,
         "dispatch rule 6 gives this 0.0 outside the label band"
     );
+    // The `metadata` band attenuates the same text score rather than
+    // zeroing it, so the requirement here is the honest bar and not
+    // exactness. The rule still left the score where it found it: what
+    // moved it is the attenuation, not a substitution charge.
+    #[cfg(feature = "metadata")]
+    assert!(
+        (scaffolding - 0.6666666666666666 * eval_script::score::RULE6_ATTENUATION).abs() < 1e-12
+            && scaffolding < 0.0826,
+        "the scaffolding farm earned {scaffolding}, want the attenuated 0.667 under the bar"
+    );
 }
 
 #[test]
