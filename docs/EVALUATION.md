@@ -34,9 +34,9 @@ section 4.1 for the check behind it.
 | ------------ | -----------: | --------: | -------------------------- |
 | `192.43`     | 1.0000000000 |    1.0000 | exact                      |
 | `192.44`     | 0.9999970198 |    0.0000 | one cent out               |
-| `$192.43`    | 1.0000000000 |    0.0000 | same number, unit added    |
+| `$192.43`    | 1.0000000000 |    0.0000 | same number, symbol added  |
 | `192.430`    | 1.0000000000 |    0.0000 | same number, trailing zero |
-| `192.43 USD` | 1.0000000000 |    0.5000 | same number, unit added    |
+| `192.43 USD` | 1.0000000000 |    0.5000 | same number, code added    |
 | `999999.99`  | 0.0000000000 |    0.0000 | a million out              |
 
 The reference gives 0.0000 to an answer one cent out and 0.0000 to an
