@@ -1078,6 +1078,21 @@ fn print_comparable(rows: &[Row]) {
 }
 
 /// The champion margin the node publishes, from the API.
+///
+/// # An observation, recorded rather than argued
+///
+/// This figure matches NEITHER build of the published baseline on this
+/// benchmark. The deployed champion is the projection build, 17,952
+/// bytes raw and 8,941 gzipped, whose own documentation says its
+/// embeddings are "not semantically meaningful"; it scores a margin of
+/// 0.0814 here. The `real_weights` build, which runs actual MiniLM
+/// inference, scores 0.2158. The published figure is 0.3736.
+///
+/// The most likely reading is that the node's 32 fixtures are simply an
+/// easier set than these 40, since a mean over different cases is a
+/// different number even when the module is byte for byte the same one.
+/// That is a reading, not a finding: the node's fixtures are not
+/// published and this repository cannot check it.
 const PUBLISHED_CHAMPION_MARGIN: f64 = 0.37360683;
 /// The case count the node's fixture set holds, from `champion_wins`.
 const PUBLISHED_CASE_COUNT: usize = 32;

@@ -23,24 +23,39 @@
 //!   or it does not. A tie counts as a failure, the same way the
 //!   promotion harness counts one.
 //!
-//! # What was measured against the published baseline
+//! # What was measured against the deployed champion
 //!
-//! Against `telegraphprotocol/telegraph-wasm-baseline` built with
-//! `--features real_weights`, which is MiniLM-L6-v2 INT8 with a BM25
-//! and a length term:
+//! `telegraphprotocol/telegraph-wasm-baseline` builds two ways. The
+//! DEPLOYED one is the default build: 17,952 bytes raw, 8,941 gzipped,
+//! which is the ~9.2 KB the protocol reports. That build is projection
+//! mode, whose own documentation says its embeddings are "not
+//! semantically meaningful" because token IDs are hashed into
+//! pseudo-embeddings rather than run through the model.
 //!
-//! | | this module, weather | baseline |
-//! |---|---|---|
-//! | price ladder span | 1.0000 | 0.3112 |
-//! | price ladder inversions | 0 of 55 | 8 of 55 |
-//! | temperature ladder inversions | 0 of 55 | 11 of 55 |
-//! | mean pair margin | 0.6902 | 0.0939 |
+//! Every figure here is against that deployed build. An earlier
+//! revision of this comment quoted the `real_weights` build, which runs
+//! actual MiniLM-L6-v2 inference and is a stronger opponent; those
+//! numbers described a module nobody is running.
 //!
-//! The baseline's composite gives 0.15 to a BM25 term whose tokeniser
-//! splits on non-alphanumeric characters and drops every token shorter
-//! than two characters. So `41.3` and `41.8` both reduce to the single
-//! term `41` and score identically, and a CVSS of `9.8` reduces to
-//! nothing at all and scores 0.0000 against itself. Read through that
+//! | | this module, weather | deployed | `real_weights` |
+//! |---|---|---|---|
+//! | price ladder span | 1.000000 | 0.244388 | 0.311240 |
+//! | price ladder inversions | 0 of 55 | 10 of 55 | 8 of 55 |
+//! | temperature ladder span | 0.999699 | 0.087342 | 0.108984 |
+//! | temperature ladder inversions | 0 of 55 | 29 of 55 | 11 of 55 |
+//! | pairs separated | 19 of 21 | 13 of 21 | 18 of 21 |
+//! | mean pair margin | 0.6902 | 0.0328 | 0.0939 |
+//!
+//! Against the deployed build there is no pair the champion separates
+//! and this module does not. The two it fails, 15 and 16, are the unit
+//! conversions outside the closed unit set, and it fails those too.
+//!
+//! The composite gives 0.15 to a BM25 term whose tokeniser splits on
+//! non-alphanumeric characters and drops every token shorter than two
+//! characters. So `41.3` and `41.8` both reduce to the single term `41`
+//! and score identically, and a CVSS of `9.8` reduces to nothing at all
+//! and scores 0.0000 against itself. That holds in both builds, since
+//! the lexical term does not depend on the weights. Read through the
 //! module's own `bm25_score` export.
 //!
 //! # Running it
