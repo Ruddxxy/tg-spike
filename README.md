@@ -34,13 +34,13 @@ production host. Full method, caveats, and reproduction commands are in
 | Score stability across 3 ground-truth renderings, n=6169      | 100% identical |            97.0% identical |
 | Quantity extracted from real miner values, n=6169             |           100% |                          — |
 | Ranks 2 miners in the order an independent truth gives, n=200 |            yes |  no, ties both at 0.000000 |
-| Correlation with real Celsius error, head-to-head set         |           0.68 | `NaN`, it emits a constant |
+| Correlation with real Celsius error, head-to-head set         |           0.67 | `NaN`, it emits a constant |
 | Pays 1.0000 for the bare string `USD` against `192.43 USD`    |     no, 0.0000 |                        yes |
 
-The evaluation also reports what it does not show: no known-bad row was reliably
-caught under this ABI, the accuracy correlation is structurally circular, and the
-ranking rests on 10 paired clusters. Section 8 of the evaluation lists the limits
-in full.
+The limits are stated with the results: no known-bad row was reliably caught
+under this ABI, the accuracy correlation is structurally circular, and the
+ranking rests on 10 paired clusters with a 29.3% bootstrap flip rate. Section 8
+of the evaluation lists them in full.
 
 ## Layout
 

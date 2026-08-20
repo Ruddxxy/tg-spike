@@ -307,6 +307,25 @@ A pair here is strict: 2 or more distinct miners answered the same query
 string. Twenty answers from one miner is not a pair; it is twenty
 samples of one miner and it ranks nothing.
 
+**Every number in this section is measured against the Open-Meteo
+archive as it read on 20 August 2026, and a re-run will not reproduce
+them.** The archive is a reanalysis, not a record: Open-Meteo serves
+preliminary ERA5T for recent dates and replaces it with final ERA5 over
+the following days, so the same request for the same hour at the same
+coordinates returns a different value later. Dubai at 2026-08-15T10:00
+read 41.3 C on the day the asks were bought and reads 40.6 C now, and
+that 0.7 C revision moves the accuracy table, the correlations and the
+flip rate below.
+
+The miner answers do not move — they are bought and recorded in
+`corpus/ask-batch.jsonl` — so only the truth side drifts. To stop the
+drift being silent, `corpus-eval headtohead` caches every archive
+response in `corpus/archive-hours.json` and stamps it with the day it
+was fetched. A second run makes zero network requests and returns the
+same numbers; the report prints the fetch date on every run. Delete the
+cache and the numbers will move, which is the honest behaviour rather
+than a defect.
+
 ### 3.1 The ground truth is independent of the answer
 
 The city list is fixed in the batch plan. Each city is geocoded once
@@ -324,20 +343,28 @@ the daemon-feed corpus could not do.
 
 ### 3.2 Per-miner accuracy
 
-| miner          |   n | mean \|e\| | median \|e\| | mean signed e | worst |
-| -------------- | --: | ---------: | -----------: | ------------: | ----: |
-| OpenWeatherMap | 123 |      1.108 |        1.060 |        +0.536 |  2.09 |
-| WeatherAPI     |  77 |      2.244 |        2.500 |        -0.821 |  5.80 |
+| miner          |   n | mean \|e\| | median \|e\| | worst \|e\| |
+| -------------- | --: | ---------: | -----------: | ----------: |
+| OpenWeatherMap | 123 |      1.066 |        1.160 |        1.74 |
+| WeatherAPI     |  77 |      2.045 |        1.000 |        5.10 |
 
 Error is in Celsius against the archive actual at the geocoded city and
-the ask hour. OpenWeatherMap is about twice as accurate, running
-slightly warm; WeatherAPI runs cold.
+the ask hour. Every column is the statistic it names, printed by the
+command below; `worst` is the largest single absolute error, not a
+percentile. OpenWeatherMap is about twice as accurate on the mean and
+its worst case is a third of WeatherAPI's. The same command also prints
+a mean signed error per miner and the clock drift between the ask and
+the miner's claimed observation time; neither is reproduced here.
+
+```
+cargo run -p corpus-eval --release -- headtohead
+```
 
 ### 3.3 The scorers, against that accuracy
 
 | scorer    | OpenWeatherMap | WeatherAPI | ranks them correctly? |
 | --------- | -------------: | ---------: | --------------------- |
-| ours      |         0.3792 |     0.2455 | yes                   |
+| ours      |         0.3827 |     0.2887 | yes                   |
 | reference |       0.000000 |   0.000000 | no — it cannot rank   |
 
 Our score puts OpenWeatherMap above WeatherAPI, which is the order the
@@ -348,9 +375,9 @@ Correlation between score and negative absolute error, on this set:
 
 | miner          |   n |   ours | reference |
 | -------------- | --: | -----: | --------: |
-| OpenWeatherMap | 123 | 0.8631 |   **NaN** |
-| WeatherAPI     |  77 | 0.6880 |   **NaN** |
-| **all pooled** | 200 | 0.6789 |   **NaN** |
+| OpenWeatherMap | 123 | 0.8636 |   **NaN** |
+| WeatherAPI     |  77 | 0.7244 |   **NaN** |
+| **all pooled** | 200 | 0.6690 |   **NaN** |
 
 The reference's correlation is `NaN`. It is not a low number; there is
 no number. A correlation divides by the standard deviation of each
@@ -364,12 +391,12 @@ seed, one shared index set per round:
 
 | scorer    | rank 1 vs 2 flip rate |
 | --------- | --------------------: |
-| ours      |                 19.9% |
+| ours      |                 29.3% |
 | reference |                  0.0% |
 
-**n = 10 clusters is small.** A 19.9% flip rate means the ordering holds
-in about four resamples out of five, which is suggestive and not
-settled. It is five times the paired data the daemon-feed corpus
+**n = 10 clusters is small.** A 29.3% flip rate means the ordering holds
+in about five resamples out of seven, which is weak evidence rather than
+a result. It is five times the paired data the daemon-feed corpus
 produced, and it is still not enough to publish a miner ranking. The
 reference's 0.0% is not stability: two miners tied at exactly 0.000000
 never swap because neither ever moves.
@@ -382,7 +409,7 @@ station-derived. A methodology gap between a model and a station network
 would systematically favour whichever miner is closer to Open-Meteo's
 own model, and that miner is not necessarily the more accurate one in
 the world. The gap is largest at Dubai, where WeatherAPI reported 35.5 C
-against an archive actual of 41.3 C.
+against an archive actual of 40.6 C.
 
 To check whether those gaps were location errors rather than measurement
 differences, the coordinates WeatherAPI returned were read back for its
@@ -1053,6 +1080,10 @@ cargo run -p corpus-eval --release -- adversarial-report
 cargo run -p ask-harness -- batch --plan          # city list, spends nothing
 cargo run -p corpus-eval --release -- geocode     # truth coordinates, free
 cargo run -p ask-harness -- batch --budget 300
+# headtohead caches every archive response in corpus/archive-hours.json
+# and prints the date it fetched them. A rerun makes zero requests and
+# gives the same numbers. Deleting that file re-fetches, and the archive
+# will have revised itself, so section 3 will move. See section 3.
 cargo run -p corpus-eval --release -- headtohead
 cargo run -p corpus-eval --release -- prepare \
    corpus/head-to-head.jsonl corpus/h2h-input.jsonl
