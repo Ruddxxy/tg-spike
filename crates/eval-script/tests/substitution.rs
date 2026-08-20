@@ -109,7 +109,7 @@ fn leaving_a_token_out_is_not_charged() {
         (scaffolding - 0.6666666666666666).abs() < 1e-12,
         "the scaffolding farm earned {scaffolding}, want the documented 0.667"
     );
-    #[cfg(not(feature = "label"))]
+    #[cfg(not(any(feature = "label", feature = "metadata")))]
     assert_eq!(
         scaffolding, 0.0,
         "dispatch rule 6 gives this 0.0 outside the label band"

@@ -31,6 +31,14 @@ onchain = []
 # rule: a truth that carries a number no longer makes a number
 # mandatory. See `answer_without_a_quantity` in `score.rs`.
 label = []
+# The `metadata` band changes the SAME dispatch rule as `label`, but it
+# attenuates rather than removing it. `label` pays the full text score
+# for an answer that carries no quantity, which closes the six dead
+# cases and reopens the scaffolding farm at 0.6667. `metadata` pays a
+# measured fraction of that score, which closes the same six cases and
+# holds every farm under the honest bar. See `RULE6_ATTENUATION` in
+# `score.rs` for the fraction and for what sets each end of its range.
+metadata = []
 
 [dependencies]
 # This crate has no dependency. An earlier version parsed both inputs

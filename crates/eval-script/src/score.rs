@@ -45,9 +45,13 @@ use crate::value::{
     all(feature = "weather", feature = "price"),
     all(feature = "weather", feature = "onchain"),
     all(feature = "weather", feature = "label"),
+    all(feature = "weather", feature = "metadata"),
     all(feature = "price", feature = "onchain"),
     all(feature = "price", feature = "label"),
+    all(feature = "price", feature = "metadata"),
     all(feature = "onchain", feature = "label"),
+    all(feature = "onchain", feature = "metadata"),
+    all(feature = "label", feature = "metadata"),
 ))]
 compile_error!(
     "eval-script: exactly one band may be enabled. Cargo keeps the \
@@ -59,11 +63,12 @@ compile_error!(
     feature = "weather",
     feature = "price",
     feature = "onchain",
-    feature = "label"
+    feature = "label",
+    feature = "metadata"
 )))]
 compile_error!(
     "eval-script: no band is enabled. Pass --features weather, price, onchain, \
-     or label."
+     label or metadata."
 );
 
 /// The relative error that scores one half.
@@ -164,6 +169,103 @@ pub const TOLERANCE: f64 = 0.15;
 ))]
 pub const TOLERANCE: f64 = 0.03;
 
+/// The `metadata` band. Held at the weather figure for the same reason
+/// the `label` band is, and measured for a label intent no more than
+/// that one was. The band exists for `RULE6_ATTENUATION` below, not for
+/// this constant.
+#[cfg(all(
+    feature = "metadata",
+    not(feature = "weather"),
+    not(feature = "price"),
+    not(feature = "onchain"),
+    not(feature = "label")
+))]
+pub const TOLERANCE: f64 = 0.03;
+
+/// What an answer that carries NO quantity keeps of its text score,
+/// when the ground truth carries one.
+///
+/// # THIS IS THE SECOND VARIANT POINT
+///
+/// `TOLERANCE` above is what three bands change. This constant is what
+/// the other two change, and it is the whole of dispatch rule 6:
+///
+/// ```text
+/// answer_without_a_quantity = RULE6_ATTENUATION * score_two_texts(truth, answer)
+/// ```
+///
+/// | band | `alpha` | an answer with no quantity |
+/// | --- | --- | --- |
+/// | `weather`, `price`, `onchain` | 0.0 | earns EXACTLY nothing |
+/// | `metadata` | 0.03595 | earns a fraction, always under the honest bar |
+/// | `label` | 1.0 | earns the full text score |
+///
+/// ## Why a fraction, and not a narrower trigger
+///
+/// The obvious repair is to fire rule 6 only when the truth's quantity
+/// is the thing the question asked for. Seven candidate triggers were
+/// measured for that and every one was rejected. The measure that came
+/// closest puts a farm answer and a correct label answer at the SAME
+/// value of 2/7, so no threshold on it separates them at any setting.
+/// `cargo run -p corpus-eval --example rule6_probe -- --report`
+/// reproduces that, and the reason is that the discriminator is the
+/// INTENT, which `rank_answer` is never given.
+///
+/// A fraction does not have to decide. The farm and the correct label
+/// answer both pay it, and the two have different requirements: the
+/// farm must stay under an absolute bar, and the label answer must only
+/// stay above a wrong answer sitting at 0.0. A constant satisfies both
+/// where a threshold cannot.
+///
+/// ## What sets each end of the range
+///
+/// The open window for this band is `(0.014348, 0.090075)` and
+/// `0.03595` is its geometric mean, so it sits as far from both walls
+/// as the window allows.
+///
+/// - The TOP is set by the worst farm. `alpha` times the largest score
+///   the text branch ever pays a no-quantity answer must stay under the
+///   honest bar, which is 0.082569: what a miner earns when it gives a
+///   real number and is 10 percent out at `t = 0.03`.
+/// - The BOTTOM is set by the tightest label pair. On the FACT_CHECK
+///   row whose truth is "Partly true. The programme reduced
+///   transmission by 40%.", the correct "partly true" carries no
+///   quantity and is attenuated, while the wrong "60%" carries one and
+///   reaches the numeric branch untouched at 0.0036. So
+///   `alpha * 0.25 > 0.0036`.
+///
+/// ## The ceiling this rests on
+///
+/// The largest score measured for a no-quantity answer is 0.9167, on a
+/// 23-token truth whose answer is the truth with the number taken out.
+/// A longer truth makes the one missing token a smaller share, so that
+/// figure CLIMBS towards 1.0 and is a floor on the true ceiling rather
+/// than the ceiling.
+///
+/// The window does not depend on having found the worst case. Taking
+/// the ceiling as 1.0 outright, the top wall becomes 0.082569 and the
+/// window is still open. `0.03595` clears it by a factor of 2.3.
+///
+/// ## What this costs
+///
+/// The other three bands keep an EXACT-ZERO guarantee: an answer with
+/// no quantity earns nothing, structurally, and no constant has to be
+/// right for that to hold. This band trades that for a quantitative
+/// guarantee: an answer with no quantity earns less than an honest
+/// miner, PROVIDED `alpha` is correct. That is a weaker claim and it is
+/// the price of the six cases. Register this band only on an intent
+/// whose wanted answer is a word.
+#[cfg(not(any(feature = "label", feature = "metadata")))]
+pub const RULE6_ATTENUATION: f64 = 0.0;
+
+/// See the definition above for the full table and the derivation.
+#[cfg(feature = "label")]
+pub const RULE6_ATTENUATION: f64 = 1.0;
+
+/// See the definition above for the full table and the derivation.
+#[cfg(all(feature = "metadata", not(feature = "label")))]
+pub const RULE6_ATTENUATION: f64 = 0.03595;
+
 /// The name of the tolerance band this build carries.
 ///
 /// This is a build-time label for the verification script and the
@@ -185,6 +287,15 @@ pub const BAND: &str = "onchain";
     not(feature = "onchain")
 ))]
 pub const BAND: &str = "label";
+/// See the `weather` definition above.
+#[cfg(all(
+    feature = "metadata",
+    not(feature = "weather"),
+    not(feature = "price"),
+    not(feature = "onchain"),
+    not(feature = "label")
+))]
+pub const BAND: &str = "metadata";
 
 /// The smallest divisor for the relative error.
 ///
@@ -324,9 +435,36 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
 /// "the temperature was C", which gives back the scaffolding and no
 /// value, while an honest miner 10 percent out earned 0.0826. Never
 /// relax it in a band whose answer is a quantity.
-#[cfg(not(feature = "label"))]
+#[cfg(not(any(feature = "label", feature = "metadata")))]
 fn answer_without_a_quantity(_ground_truth: &str, _answer: &str) -> f64 {
     0.0
+}
+
+/// This function scores an answer that holds no quantity, against a
+/// ground truth that holds one. See the first definition of this
+/// function for the rule the numeric bands use.
+///
+/// # The `metadata` band: a fraction of the text comparison
+///
+/// This band serves the same intents the `label` band does, and it
+/// answers the same complaint: a truth that carries a confidence beside
+/// a verdict, or a CVSS beside a severity, made a number mandatory and
+/// killed the correct word.
+///
+/// It differs in what it pays. `label` pays the full text score, which
+/// closes those cases and reopens the scaffolding farm: the truth "The
+/// temperature was 28.9 C." pays 0.6667 for "the temperature was C",
+/// which holds no temperature, against 0.0826 for an honest miner 10
+/// percent out. This band pays `RULE6_ATTENUATION` of that score, which
+/// is 0.0330 for the same farm and keeps every measured farm under the
+/// bar while every one of the six cases still separates.
+///
+/// The multiply is a single IEEE-754 operation with one rounding step,
+/// so every host gives the same bits. See `RULE6_ATTENUATION` for how
+/// the constant was derived and for what the band gives up.
+#[cfg(all(feature = "metadata", not(feature = "label")))]
+fn answer_without_a_quantity(ground_truth: &str, answer: &str) -> f64 {
+    RULE6_ATTENUATION * score_two_texts(ground_truth, answer)
 }
 
 /// This function scores an answer that holds no quantity, against a

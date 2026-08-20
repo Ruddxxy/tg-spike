@@ -481,7 +481,7 @@ const JSON_TRUTH: &str = "{\"temperature_2m\":28.9,\"time\":\"2026-08-10T12:00\"
 /// this test names is priced differently there. See
 /// `the_label_band_pays_for_the_scaffolding_it_admits` in
 /// `tests/label_band.rs` for what that band does instead.
-#[cfg(not(feature = "label"))]
+#[cfg(not(any(feature = "label", feature = "metadata")))]
 #[test]
 fn an_answer_of_the_unit_alone_earns_nothing() {
     for (truth, answer) in [
@@ -504,7 +504,7 @@ fn an_answer_of_the_unit_alone_earns_nothing() {
 /// this test names is priced differently there. See
 /// `the_label_band_pays_for_the_scaffolding_it_admits` in
 /// `tests/label_band.rs` for what that band does instead.
-#[cfg(not(feature = "label"))]
+#[cfg(not(any(feature = "label", feature = "metadata")))]
 #[test]
 fn repeating_the_unit_many_times_earns_nothing() {
     let earned = score("192.43 USD", "USD USD USD USD USD USD USD USD");
@@ -515,7 +515,7 @@ fn repeating_the_unit_many_times_earns_nothing() {
 /// this test names is priced differently there. See
 /// `the_label_band_pays_for_the_scaffolding_it_admits` in
 /// `tests/label_band.rs` for what that band does instead.
-#[cfg(not(feature = "label"))]
+#[cfg(not(any(feature = "label", feature = "metadata")))]
 #[test]
 fn giving_back_the_prose_words_without_the_number_earns_nothing() {
     // This is the leak the cross-branch probe found. The answer repeats the

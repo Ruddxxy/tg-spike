@@ -97,7 +97,7 @@ band_flags() {
   esac
 }
 
-for BAND in weather price onchain label; do
+for BAND in weather price onchain label metadata; do
   banner "BAND: $BAND"
   FLAGS="$(band_flags "$BAND")"
   OUT="$DIST/eval_script_${BAND}.wasm"
@@ -254,7 +254,7 @@ HASHES="$DIST/HASHES.md"
 } > "$HASHES"
 
 printf '%-14s %-8s %-8s %s\n' band imports exports sha256
-for BAND in weather price onchain label; do
+for BAND in weather price onchain label metadata; do
   OUT="$DIST/eval_script_${BAND}.wasm"
   if [ ! -f "$OUT" ]; then
     printf '%-14s %s\n' "$BAND" "MISSING"

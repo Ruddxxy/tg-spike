@@ -494,7 +494,7 @@ fn a_spray_still_pays_for_every_wrong_guess() {
 
 /// The `label` band relaxes dispatch rule 6 on purpose. See
 /// `tests/label_band.rs` for what that band pays here.
-#[cfg(not(feature = "label"))]
+#[cfg(not(any(feature = "label", feature = "metadata")))]
 #[test]
 fn the_unit_only_farm_still_scores_zero() {
     // The two fixes above must not pay a miner that gives back the
