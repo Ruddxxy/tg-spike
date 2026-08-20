@@ -455,7 +455,7 @@ published `word_overlap` would be a claim about the copy, however
 faithful the copy is; section 4.1 gives the check that keeps the copy
 out of every published figure.
 
-The honest comparison throughout is a miner 10% out, which scores 0.081.
+The honest comparison throughout is a miner 10% out, which scores 0.0826.
 Every row is also a test in `crates/eval-script/tests/adversarial.rs`.
 
 | strategy                 | ground truth                 | answer                           |     ours | reference |
@@ -703,7 +703,7 @@ scorer against real corpus renderings found three live defects:
    the scorer asked "does the whole string parse as one value?" instead
    of "does the ground truth contain a quantity?". A prose truth fell to
    token overlap, so returning the scaffolding words without the number
-   paid 0.667 while an honest miner 10% out earned 0.081 — the farm paid
+   paid 0.667 while an honest miner 10% out earned 0.0826 — the farm paid
    eight times better than real work. A JSON truth has no whitespace, so
    number extraction found nothing and a correct answer scored zero.
 

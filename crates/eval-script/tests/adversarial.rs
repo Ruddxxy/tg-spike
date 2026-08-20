@@ -521,7 +521,7 @@ fn giving_back_the_prose_words_without_the_number_earns_nothing() {
     // This is the leak the cross-branch probe found. The answer repeats the
     // scaffolding of the ground truth and omits the value. It scored
     // 0.667 before the fix, while an honest miner 10 percent out
-    // scored 0.081.
+    // scored 0.0826.
     for answer in [
         "the temperature was C",
         "temperature",

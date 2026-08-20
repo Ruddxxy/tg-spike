@@ -265,7 +265,7 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
     //   one value, so it fell to token overlap. An answer of "the
     //   temperature was C" then scored 0.667 by giving back the
     //   scaffolding words and no number, while an honest miner 10
-    //   percent out scored 0.081. The farm paid 8 times better than
+    //   percent out scored 0.0826. The farm paid 8 times better than
     //   real work.
     // - A JSON truth, {"temperature_2m":28.9,...}, holds no whitespace,
     //   so a whitespace split found no number at all and the CORRECT
@@ -322,7 +322,7 @@ pub fn score_answer(question: &str, ground_truth: &str, answer: &str) -> f64 {
 /// The rule is load bearing. Without it, the truth
 /// "The temperature was 28.9 C." paid 0.667 for the answer
 /// "the temperature was C", which gives back the scaffolding and no
-/// value, while an honest miner 10 percent out earned 0.081. Never
+/// value, while an honest miner 10 percent out earned 0.0826. Never
 /// relax it in a band whose answer is a quantity.
 #[cfg(not(feature = "label"))]
 fn answer_without_a_quantity(_ground_truth: &str, _answer: &str) -> f64 {
