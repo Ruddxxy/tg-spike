@@ -31,3 +31,9 @@ dist/*
 # The hash RECORD is committed, because that is the part worth keeping:
 # it says what was built and what to check before registering it.
 !dist/HASHES.md
+
+# Editor and agent tooling writes machine-local settings here. It is
+# covered by a global ignore on the machine this was written on, and a
+# global ignore protects one machine rather than the repository. This
+# line protects the repository.
+.claude/
