@@ -190,17 +190,17 @@ where a constant reaches 0.21 says little about the curve; that the
 protocol's own baseline emits a constant on 6,169 rows of its own
 traffic is worth knowing on its own.
 
-Our own tracking of the error is not separate evidence, and this
-document does not offer it as such — it is the circularity above,
-restated. The claim that our scorer survives real traffic rests on
-section 2.1 instead, which does not use the correlation at all: 100%
+This script's own tracking of the error is not separate evidence — it
+is the circularity above, restated. The claim that the script holds up
+on real traffic rests on section 2.1 instead, which does not use the
+correlation at all: 100%
 quantity extraction on 6,169 real miner values, across all three
 ground-truth renderings, with 100% of rows scoring identically
 whichever rendering is used. That is a measurement of parsing, unit
 conversion, and rendering robustness on production text, and it stands
 whether or not the correlation means anything.
 
-What the correlation does not establish is that our scorer measures
+What the correlation does not establish is that the script measures
 accuracy well. That needs ground truth which does not derive from the
 miner's own answer — in particular a truth joined at the question's
 location and time rather than at the coordinates the miner returned.
@@ -226,7 +226,7 @@ from 323 to 3941.
 cargo run -p corpus-eval --release -- stats
 ```
 
-### 2.4 The five known-bad rows
+### 2.4 Known-bad rows
 
 **Zero of the five were reliably caught.** The Miami climate group,
 which answered an October 2022 question with an August 2026 forecast,
@@ -927,12 +927,13 @@ node nothing to compare:
 | q14      | `{"label":"negative","score":0.88}`                         | 0.0000 | 0.0000 |
 | q23      | `{"verdict":"false","sources":3}`                           | 0.0000 | 0.0000 |
 
-A sixth row, q07 `{"grade":"A","protocol":"TLS 1.3"}`, was in this table
-until the quoted-span rule was tightened to admit only a string that IS
-a value. `"TLS 1.3"` names a protocol version, so under the looser rule
-its `1.3` was a quantity, the truth carried a number, and rule 6 zeroed
-the correct answer `A`. It now scores 0.1667 against 0.0000 and is a
-win in every band. See section 4.3.
+q07, `{"grade":"A","protocol":"TLS 1.3"}`, is not in that table, and the
+quoted-span rule of section 4.3 is why. `"TLS 1.3"` names a protocol
+version, and a rule that admits any quoted string holding a number
+reads its `1.3` as a quantity, which makes the truth carry a number and
+sends the correct answer `A` to 0.0000 under rule 6. Because the rule
+admits only a string that IS a value, q07 scores 0.1667 against 0.0000
+and is a win in every band.
 
 Dispatch rule 6 is the cause: the truth holds a quantity, the answer
 holds none, so the answer scores 0.0. In these rows the quantity is a
@@ -982,7 +983,7 @@ registered for an intent whose answer is a quantity, and
 `crates/eval-script/tests/label_band.rs` asserts both the gain and the
 price.
 
-### 5.4 Stage 1, and what a long answer used to cost
+### 5.4 Stage 1, and the cost of a long answer
 
 All four Stage 1 gates pass on all four bands: the module loads and
 answers all 174 vectors, a blank and a whitespace-only answer both score
@@ -1128,16 +1129,21 @@ cargo run -p host-runner --release
 ```
 
 The corpus is rebuilt with `cargo run -p corpus-builder`. It caches
-every HTTP response, so a rerun makes zero network requests.
+every HTTP response, so a rerun makes zero network requests. The
+head-to-head archive fetch caches the same way, in
+`corpus/archive-hours.json`. Neither cache is committed — `corpus/` is
+362 MB — so a clean clone re-fetches, and section 3's numbers will
+differ because the reanalysis behind them has moved on. That is stated
+where those numbers are.
 
 ---
 
-## 8. What this evaluation does not show
+## 8. Limits
 
 - **It does not settle a miner ranking.** Section 3 ranks two miners on
-  10 paired clusters with a 19.9% bootstrap flip rate. That is
-  suggestive, not settled, and it covers only the 2 miners the router
-  actually reached out of 5 registered active.
+  10 paired clusters with a 29.3% bootstrap flip rate. That is weak
+  evidence, not a settled ranking, and it covers only the 2 miners the
+  router actually reached out of 5 registered active.
 - **It does not show that wrong-location or wrong-time answers are
   caught.** Zero of five known-bad groups were caught, and one scored
   above the corpus mean. See section 2.4 for why no value-comparing
