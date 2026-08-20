@@ -959,10 +959,15 @@ off the floor:
 | q23 good |       0.0000 |     0.2500 |
 
 No `bad` answer moves, so nothing on this benchmark is paid that was not
-paid before. The same holds over the full 19,482-vector set: the two
-bands differ on 21 vectors, every one of them a case where the truth
-carries a number and the answer carries none — rule 6's exact
-precondition — and every one raised from exactly 0.0000.
+paid before. The same holds far beyond the benchmark. Driving all 6,169
+corpus rows, all 200 head-to-head rows, the adversarial and prose cases
+and a set of hand-built defence probes through both compiled modules —
+19,542 vectors in each of the three ground-truth renderings — the two
+bands differ on 69 vectors. Every one of the 69 is a case where the
+truth carries a number and the answer carries none, which is rule 6's
+exact precondition, every one is RAISED, and every one was exactly
+0.0000 under the weather band. The label band never lowers a score and
+never moves a score that was not zero.
 
 | band    | `worst_self_match` | `score_stddev` | `candidate_margin` | `candidate_wins` |
 | ------- | -----------------: | -------------: | -----------------: | ---------------: |
