@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use corpus_builder::rounding::{format_temp_c, round_temp_c};
@@ -53,6 +53,28 @@ const EXPECTED_UNIT: &str = "°C";
 
 /// Where the joined corpus is written.
 pub const OUTPUT_PATH: &str = "corpus/head-to-head.jsonl";
+
+/// Where the fetched archive hours are kept.
+///
+/// # This file is what makes section 3 reproducible
+///
+/// The archive is a REANALYSIS product, not a record. Open-Meteo serves
+/// ERA5T first and replaces it with final ERA5 over the following days,
+/// so the same request for the same hour at the same coordinates gives
+/// a different number a week later. Dubai at 2026-08-15T10:00 read 41.3
+/// on the day and reads 40.6 five days on.
+///
+/// Without a cache this module re-fetched on every run, so running the
+/// documented command sequence OVERWROTE the published numbers with
+/// different ones and the document could not be checked against the
+/// tool that made it. Every other fetch in this workspace caches; this
+/// one did not, and that was the defect.
+///
+/// The cache is keyed by the full request URL, which carries the
+/// coordinates and the date span, so a different city or a different
+/// span is a different entry. Delete the file to re-fetch, and expect
+/// the numbers to move when you do.
+pub const ARCHIVE_CACHE_PATH: &str = "corpus/archive-hours.json";
 
 /// The miner id to slug map, from the node's own registry.
 ///
@@ -187,7 +209,24 @@ fn date_of(hour_key: &str) -> &str {
     hour_key.split('T').next().unwrap_or(hour_key)
 }
 
+/// This function gives today's UTC date as `YYYY-MM-DD`.
+///
+/// It stamps a cache entry with the day it was fetched, so the report
+/// and the document can both name the vintage of the reanalysis they
+/// used. The clock is read HERE and never inside a scoring path; the
+/// scoring module has no clock at all.
+pub fn today_utc_date() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0);
+    corpus_builder::time::epoch_to_naive_minute(seconds)
+        .map(|stamp| date_of(&stamp).to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 /// The archive coverage for one location.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveSeries {
     /// Hour key to Celsius actual.
     values: BTreeMap<String, f64>,
@@ -200,22 +239,83 @@ impl ArchiveSeries {
     }
 }
 
-/// This function fetches the archive for one location and date span.
+/// Every archive series this workspace has fetched, keyed by request URL.
+///
+/// See [`ARCHIVE_CACHE_PATH`] for why this is on disk.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ArchiveCache {
+    /// Request URL to the hours it returned.
+    #[serde(default)]
+    entries: BTreeMap<String, ArchiveSeries>,
+    /// The UTC date each entry was first fetched, for the report to
+    /// print. A number the reader cannot date is a number the reader
+    /// cannot check.
+    #[serde(default)]
+    fetched_on: BTreeMap<String, String>,
+}
+
+impl ArchiveCache {
+    /// This function reads the cache, or gives an empty one.
+    ///
+    /// A cache that cannot be parsed is treated as absent rather than as
+    /// an error: the only cost of a miss is a network call.
+    pub fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// This function writes the cache back.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+        let text = serde_json::to_string_pretty(self)
+            .map_err(|error| format!("cannot encode the archive cache: {error}"))?;
+        std::fs::write(path, text)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))
+    }
+
+    /// This function gives the earliest fetch date the cache holds.
+    ///
+    /// The report prints it, so the reader knows which vintage of the
+    /// reanalysis every number in section 3 came from.
+    pub fn earliest_fetch_date(&self) -> Option<&str> {
+        self.fetched_on.values().map(String::as_str).min()
+    }
+}
+
+/// This function gives the archive for one location and date span.
+///
+/// It reads [`ARCHIVE_CACHE_PATH`] first and only calls the network on a
+/// miss, so a second run makes zero requests and returns the same
+/// numbers. That is not a speed optimisation: the archive revises its
+/// own values, so an uncached refetch silently changes every figure in
+/// section 3 of the evaluation.
 ///
 /// This is a smaller fetcher than the one in `corpus-builder`, which
 /// carries the builder's own HTTP cache and grouping. The unit
 /// assertion is kept, because a response that declares another unit
 /// must fail rather than be trusted.
 pub fn fetch_archive(
+    cache: &mut ArchiveCache,
+    today_utc: &str,
     latitude: f64,
     longitude: f64,
     start_date: &str,
     end_date: &str,
-) -> Result<ArchiveSeries, String> {
+) -> Result<(ArchiveSeries, bool), String> {
     let url = format!(
         "{ARCHIVE_BASE}?latitude={latitude:.4}&longitude={longitude:.4}\
          &start_date={start_date}&end_date={end_date}&hourly=temperature_2m&timezone=UTC"
     );
+
+    if let Some(series) = cache.entries.get(&url) {
+        return Ok((series.clone(), true));
+    }
+
     let body = ureq::get(&url)
         .call()
         .map_err(|error| format!("the archive request failed: {error}"))?
@@ -257,7 +357,10 @@ pub fn fetch_archive(
             values.insert(key.to_string(), value);
         }
     }
-    Ok(ArchiveSeries { values })
+    let series = ArchiveSeries { values };
+    cache.entries.insert(url.clone(), series.clone());
+    cache.fetched_on.insert(url, today_utc.to_string());
+    Ok((series, false))
 }
 
 /// One emitted row plus the facts the report needs.

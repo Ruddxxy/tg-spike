@@ -251,19 +251,49 @@ fn run_head_to_head() -> Result<(), String> {
     println!("archive span {start} to {end}");
     println!();
 
+    // The archive is a reanalysis and it revises its own values, so the
+    // fetch is cached. Without the cache this command rewrote section 3
+    // of the evaluation with different numbers on every run. See
+    // `headtohead::ARCHIVE_CACHE_PATH`.
+    let cache_path = std::path::Path::new(headtohead::ARCHIVE_CACHE_PATH);
+    let mut archive_cache = headtohead::ArchiveCache::load(cache_path);
+    let today = headtohead::today_utc_date();
+
     let mut archives = BTreeMap::new();
+    let mut fetched = 0usize;
     for key in headtohead::city_keys(&asks) {
         let Some(place) = coordinates.get(&key) else {
             println!("  {key:<12} NOT GEOCODED, skipped");
             continue;
         };
-        match headtohead::fetch_archive(place.latitude, place.longitude, &start, &end) {
-            Ok(series) => {
-                println!("  {key:<12} archive fetched");
+        match headtohead::fetch_archive(
+            &mut archive_cache,
+            &today,
+            place.latitude,
+            place.longitude,
+            &start,
+            &end,
+        ) {
+            Ok((series, from_cache)) => {
+                if from_cache {
+                    println!("  {key:<12} archive cached");
+                } else {
+                    fetched += 1;
+                    println!("  {key:<12} archive fetched");
+                }
                 archives.insert(key, series);
             }
             Err(error) => println!("  {key:<12} archive FAILED: {error}"),
         }
+    }
+    archive_cache.save(cache_path)?;
+    println!();
+    println!(
+        "archive: {fetched} network request(s), cache at {}",
+        cache_path.display()
+    );
+    if let Some(date) = archive_cache.earliest_fetch_date() {
+        println!("archive values first fetched on {date} (UTC), and pinned since");
     }
 
     let mut drops = headtohead::DropCounts::default();
