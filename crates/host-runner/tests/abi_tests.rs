@@ -23,20 +23,39 @@ use host_runner::cases;
 use host_runner::checks;
 use host_runner::instance::{AllocOutcome, ScriptInstance};
 
+/// This gives the directory cargo writes build artefacts into.
+///
+/// `CARGO_TARGET_DIR` moves that directory, and these tests have to
+/// follow it. Hard-coding `<workspace>/target` made every one of them
+/// fail with "no eval-script '.wasm'" whenever that variable was set,
+/// which reads as a broken module rather than as a harness that looked
+/// in the wrong place. A relative value is resolved against the
+/// workspace root, which is what cargo itself does.
+fn target_dir() -> PathBuf {
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(value) => {
+            let configured = PathBuf::from(value);
+            if configured.is_absolute() {
+                configured
+            } else {
+                workspace_root.join(configured)
+            }
+        }
+        None => workspace_root.join("target"),
+    }
+}
+
 /// This gives the path to the `wasm32-unknown-unknown` release artefact.
 fn unknown_unknown_wasm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("target/wasm32-unknown-unknown/release/eval_script.wasm")
+    target_dir().join("wasm32-unknown-unknown/release/eval_script.wasm")
 }
 
 /// This gives the path to the `wasm32-wasip1` release artefact.
 fn wasip1_wasm_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("target/wasm32-wasip1/release/eval_script.wasm")
+    target_dir().join("wasm32-wasip1/release/eval_script.wasm")
 }
 
 /// This gives every `.wasm` path these tests must drive.
