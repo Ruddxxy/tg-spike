@@ -151,8 +151,7 @@ fn main() {
                     }
                 }
                 Err(error) => {
-                    eprintln!("cannot read scores: {error}");
-                    std::process::exit(1);
+                    missing_scores(scores, error);
                 }
             }
         }
@@ -167,8 +166,7 @@ fn main() {
             match stats::load_scores(path) {
                 Ok(rows) => ranking::print_rank_flips(&rows, 2000, 20260814),
                 Err(error) => {
-                    eprintln!("cannot read scores: {error}");
-                    std::process::exit(1);
+                    missing_scores(path, error);
                 }
             }
         }
@@ -187,8 +185,7 @@ fn main() {
                     stats::print_miner_stats(&rows);
                 }
                 Err(error) => {
-                    eprintln!("cannot read scores: {error}");
-                    std::process::exit(1);
+                    missing_scores(path, error);
                 }
             }
         }
@@ -230,6 +227,36 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+/// This function reports a missing score file and stops.
+///
+/// The score file is BUILT, not committed: `corpus/` holds 362 MB of
+/// raw upstream responses and is gitignored, so a clean checkout has
+/// none of it. An error that says only "no such file" leaves the reader
+/// to work out which of six commands makes that file. This one names
+/// them, the way `tools/build-variants.sh` names the champion clone.
+fn missing_scores(path: &std::path::Path, error: impl std::fmt::Display) -> ! {
+    eprintln!("cannot read scores at {}: {error}", path.display());
+    eprintln!();
+    eprintln!("  The score file is built from the corpus, and the corpus is not");
+    eprintln!("  committed. Build both:");
+    eprintln!();
+    eprintln!(
+        "    cargo run -p corpus-builder                     # fetches and caches the corpus"
+    );
+    eprintln!(
+        "    cargo run -p corpus-eval --release -- prepare   # writes corpus/eval-input.jsonl"
+    );
+    eprintln!("    (cd tools/wazero-runner && go run . \\");
+    eprintln!("       -corpus ../../corpus/eval-input.jsonl \\");
+    eprintln!("       -a ../../target/wasm32-unknown-unknown/release/eval_script.wasm \\");
+    eprintln!("       -b ../../reference/scoring_module.wasm \\");
+    eprintln!("       -out ../../corpus/eval-scores.jsonl)");
+    eprintln!();
+    eprintln!("  The head-to-head set of section 3 is bought, not fetched, and costs");
+    eprintln!("  2.00 testnet USDC. See section 7 of docs/EVALUATION.md.");
+    std::process::exit(1);
 }
 
 /// This function joins ground truth onto the bought asks and reports.
