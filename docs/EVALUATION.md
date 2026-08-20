@@ -84,10 +84,11 @@ temperature intent in Celsius. Script registration is per-intent, so a
 per-intent variant is a separate registered binary; the band is a cargo
 feature, so the value is folded into the curve at compile time.
 
-Three of the four bands change only that constant. The fourth, `label`,
-changes a dispatch rule instead and leaves the constant at the weather
-figure — see section 5.3. See the doc comment on `TOLERANCE` in
-`crates/eval-script/src/score.rs` for all four, and for why the price
+Three of the five bands change only that constant. The other two,
+`label` and `metadata`, change a dispatch rule instead and leave the
+constant at the weather figure — see sections 5.3 and 5.6. See the doc
+comments on `TOLERANCE` and `RULE6_ATTENUATION` in
+`crates/eval-script/src/score.rs` for all five, and for why the price
 and gas figures are reasoned rather than measured.
 
 ---
@@ -961,20 +962,25 @@ off the floor:
 No `bad` answer moves, so nothing on this benchmark is paid that was not
 paid before. The same holds far beyond the benchmark. Driving all 6,169
 corpus rows, all 200 head-to-head rows, the adversarial and prose cases
-and a set of hand-built defence probes through both compiled modules —
-19,542 vectors in each of the three ground-truth renderings — the two
-bands differ on 69 vectors. Every one of the 69 is a case where the
-truth carries a number and the answer carries none, which is rule 6's
-exact precondition, every one is RAISED, and every one was exactly
-0.0000 under the weather band. The label band never lowers a score and
-never moves a score that was not zero.
+and the probe fixtures through the compiled modules — 19,446 vectors in
+each of the three ground-truth renderings — the weather and label bands
+differ on 30 vectors. Every one of the 30 is a case where the truth
+carries a number and the answer carries none, which is rule 6's exact
+precondition, every one is RAISED, and every one was exactly 0.0000
+under the weather band. The label band never lowers a score and never
+moves a score that was not zero.
 
-| band    | `worst_self_match` | `score_stddev` | `candidate_margin` | `candidate_wins` |
-| ------- | -----------------: | -------------: | -----------------: | ---------------: |
-| weather |             1.0000 |         0.4201 |               0.56 |            34/40 |
-| price   |             1.0000 |         0.4218 |               0.57 |            34/40 |
-| onchain |             1.0000 |         0.4215 |               0.53 |            34/40 |
-| label   |             1.0000 |         0.4117 |               0.59 |            40/40 |
+What it raises them TO is the problem. The highest of the 30 reaches
+0.9167 under the label band, against an honest bar of 0.0826. Section
+5.6 is the band that moves the same 30 vectors and tops out at 0.0330.
+
+| band     | `worst_self_match` | `score_stddev` | `candidate_margin` | `candidate_wins` |
+| -------- | -----------------: | -------------: | -----------------: | ---------------: |
+| weather  |             1.0000 |         0.4201 |               0.56 |            34/40 |
+| price    |             1.0000 |         0.4218 |               0.57 |            34/40 |
+| onchain  |             1.0000 |         0.4215 |               0.53 |            34/40 |
+| label    |             1.0000 |         0.4117 |               0.59 |            40/40 |
+| metadata |             1.0000 |         0.4197 |               0.56 |            40/40 |
 
 The `label` figures are NOT MEASURED in the sense the weather tolerance
 is. They come from this 40-row benchmark, which this repository wrote.
@@ -988,9 +994,12 @@ registered for an intent whose answer is a quantity, and
 `crates/eval-script/tests/label_band.rs` asserts both the gain and the
 price.
 
+Section 5.6 is the band that keeps the gain and pays a much smaller
+share of that price.
+
 ### 5.4 Stage 1, and the cost of a long answer
 
-All four Stage 1 gates pass on all four bands: the module loads and
+All four Stage 1 gates pass on all five bands: the module loads and
 answers all 174 vectors, a blank and a whitespace-only answer both score
 exactly 0.0000, a correct answer beats an unrelated one on 40 of 40
 questions, and all 14 long, emoji and non-ASCII cases return without a
@@ -1040,6 +1049,109 @@ consensus decision:
   prefix score 1.0000. That is a false positive rather than a farm, since
   it needs the truth's own prefix, but a wrong answer can be paid in
   full.
+
+### 5.6 The `metadata` band: rule 6 as a fraction
+
+The `label` band buys the six rows of section 5.3 by removing rule 6,
+and section 5.3 states what that costs: 0.667 for `the temperature was
+C` against 0.0831 for an honest miner. The `metadata` band buys the same
+six rows and keeps the farm shut.
+
+Rule 6 becomes a multiply rather than a gate:
+
+```text
+answer_without_a_quantity = RULE6_ATTENUATION * score_two_texts(truth, answer)
+```
+
+`RULE6_ATTENUATION` is 0.0 for `weather`, `price` and `onchain`, which
+is their existing exact-zero rule written as a constant. It is 1.0 for
+`label`. It is **0.03595** for `metadata`.
+
+**Why a fraction and not a narrower trigger.** The obvious repair is to
+fire rule 6 only when the truth's quantity is what the question asked
+for. Seven candidate triggers were measured for that and every one was
+rejected. `cargo run -p corpus-eval --example rule6_probe -- --report`
+reproduces it. The measure that came closest is the share of the truth's
+vocabulary the answer gives back, and it puts a farm answer and a
+correct label answer at the SAME value of 2/7:
+
+|      | truth                                                     | answer             | share | wanted             |
+| ---- | --------------------------------------------------------- | ------------------ | ----: | ------------------ |
+| farm | `The station reported that the temperature was 28.9 C`    | `station reported` |   2/7 | must be zeroed     |
+| q22  | `Partly true. The programme reduced transmission by 40%.` | `partly true`      |   2/7 | must NOT be zeroed |
+
+No threshold separates those at any setting. Three adversarial farm rows
+in the probe are built to land on that value, so the overlap is a
+property of the measure and not of the cases that were picked. The
+discriminator is the INTENT, and `rank_answer` is never given it.
+
+A fraction does not have to decide. The farm and the correct label
+answer both pay it, and the two have different requirements: the farm
+must stay under an absolute bar, and the label answer must only stay
+above a wrong answer sitting at 0.0.
+
+**What sets each end.** The open window is `(0.014348, 0.090075)` and
+0.03595 is its geometric mean.
+
+- The TOP is the worst farm. `alpha` times the largest score the text
+  branch ever pays a no-quantity answer must stay under 0.082569, what
+  a miner earns giving a real number 10 percent out at `t = 0.03`.
+- The BOTTOM is the tightest label pair, q22. The correct `partly true`
+  carries no quantity and is attenuated; the wrong `60%` carries one, so
+  it reaches the numeric branch untouched at 0.0036. Hence
+  `alpha * 0.25 > 0.0036`.
+
+**The ceiling this rests on.** The largest text-branch score measured
+for a no-quantity answer is 0.9167, on a 23-token truth whose answer is
+the truth with the number removed:
+
+| truth     | answer                     |  score |
+| --------- | -------------------------- | -----: |
+| 5 tokens  | the truth minus its number | 0.6667 |
+| 12 tokens | the truth minus its number | 0.8462 |
+| 23 tokens | the truth minus its number | 0.9167 |
+
+A longer truth makes the one missing token a smaller share, so that
+figure climbs towards 1.0 and is a floor on the true ceiling rather than
+the ceiling. **The window stays open taking the ceiling as 1.0**: the
+top wall becomes 0.082569 and 0.03595 clears it by 2.3.
+
+**What it costs.** The three numeric bands hold an exact-zero guarantee:
+an answer with no quantity earns nothing, structurally, and no constant
+has to be right for that to hold. This band trades that for a
+quantitative guarantee: such an answer earns less than an honest miner,
+PROVIDED 0.03595 is correct.
+
+Three assertions in `tests/adversarial.rs` that read
+`assert_eq!(earned, 0.0)` are gated off this band, and
+`tests/metadata_band.rs` asserts `earned < 0.0826` in their place. Those
+three are the unit-only farm, the repeated-unit farm and the
+scaffolding-echo farm. They still hold on `weather`, `price` and
+`onchain` in their original exact-zero form.
+
+That is a weaker claim than the numeric bands make, and it is the price
+of the six rows. Register this band only on an intent whose wanted
+answer is a word.
+
+**What moves, across 19,446 vectors.** Driving the same set section 5.3
+uses through all three bands:
+
+| comparison            | vectors differing | raised | lowered | were exactly 0.0000 | highest reached |
+| --------------------- | ----------------: | -----: | ------: | ------------------: | --------------: |
+| weather vs `label`    |                30 |     30 |       0 |                  30 |          0.9167 |
+| weather vs `metadata` |                30 |     30 |       0 |                  30 |      **0.0330** |
+
+The same 30 vectors move under both bands, because both change the same
+rule and nothing else. The difference is where they land. Under `label`
+the worst of them clears the honest bar by 11 times. Under `metadata`
+the worst sits at 0.0330, which is 40 percent of the bar. Neither band
+lowers any score, and neither moves a score that was not exactly zero.
+
+**Determinism is unaffected.** The attenuation is one multiply, an exact
+IEEE-754 operation with a single rounding step, so every host agrees.
+Measured: all 19,446 vectors are bit identical across wasmtime and
+wazero on this band, and `host-runner` returns `overall verdict: PASS`
+on all six of its checks.
 
 ---
 

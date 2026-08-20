@@ -108,18 +108,59 @@ Script registration is per-intent, so a per-intent variant is a separate registe
 binary. A band is a cargo feature, so what it changes is folded in at compile time —
 no configuration input, no extra ABI argument, no runtime branch.
 
-| Band      |   `t` | Intents                                                                                                                                               | Basis                                     |
-| --------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `weather` |  0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST`                                                                                                                   | **measured** against the 6,169-row corpus |
-| `price`   | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA`                                                                                  | **reasoned, not measured**                |
-| `onchain` |  0.15 | `GAS_PRICE`, `TVL_LOOKUP`                                                                                                                             | **reasoned, not measured**                |
-| `label`   |  0.03 | `URL_SCAN`, `SSL_VERIFICATION`, `CVE_LOOKUP`, `SENTIMENT_ANALYSIS`, `TEXT_CLASSIFICATION`, `CONTENT_MODERATION`, `FACT_CHECK`, `LANGUAGE_TRANSLATION` | **reasoned, not measured**                |
+| Band       |   `t` | Intents                                                                                                                                               | Basis                                     |
+| ---------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `weather`  |  0.03 | `WEATHER_CHECK`, `WEATHER_FORECAST`                                                                                                                   | **measured** against the 6,169-row corpus |
+| `price`    | 0.002 | `CRYPTO_PRICE`, `STOCK_PRICE`, `CURRENCY_EXCHANGE`, `FINANCIAL_DATA`                                                                                  | **reasoned, not measured**                |
+| `onchain`  |  0.15 | `GAS_PRICE`, `TVL_LOOKUP`                                                                                                                             | **reasoned, not measured**                |
+| `label`    |  0.03 | `URL_SCAN`, `SSL_VERIFICATION`, `CVE_LOOKUP`, `SENTIMENT_ANALYSIS`, `TEXT_CLASSIFICATION`, `CONTENT_MODERATION`, `FACT_CHECK`, `LANGUAGE_TRANSLATION` | **reasoned, not measured**                |
+| `metadata` |  0.03 | the same intents as `label`                                                                                                                           | **reasoned, not measured**                |
 
 Only the weather band has evidence behind it. The others are starting points argued
 from what a bad answer looks like in that domain — a 3% error is a bad quote on a
 liquid pair, and a gas forecast within 15% is useful. Each needs the same corpus work
 the weather band had before its exact figure should be trusted. The reasoning for
 each is in the `TOLERANCE` doc comment in `crates/eval-script/src/score.rs`.
+
+### The `metadata` band, and what it gives up
+
+`metadata` serves the same intents `label` does and differs from it in one number:
+what an answer carrying no quantity keeps of its text score, when the truth carries
+one. `label` pays all of it. `metadata` pays **0.03595** of it.
+
+That is the whole band. It exists because `label` closes the six dead cases by
+reopening the farm those cases were protecting against, and `metadata` closes them
+without doing so:
+
+| answer, against the truth `The temperature was 28.9 C.` | `weather` | `label` | `metadata` |
+| ------------------------------------------------------- | --------: | ------: | ---------: |
+| `the temperature was C` — no temperature in it          |    0.0000 |  0.6667 |     0.0240 |
+| an honest miner 10% out, `31.79 C`                      |    0.0826 |  0.0826 |     0.0826 |
+
+The constant is the geometric mean of an open window. Its **top** is set by the worst
+farm: 0.03595 times the largest score the text branch ever pays a no-quantity answer
+must stay under the honest bar of 0.0826. Its **bottom** is set by the tightest label
+pair: on the `FACT_CHECK` row the correct `partly true` is attenuated while the wrong
+`60%` carries a number and reaches the numeric branch untouched at 0.0036.
+
+The largest text-branch score measured for a no-quantity answer is **0.9167**, on a
+23-token truth whose answer is the truth with the number removed. That figure climbs
+towards 1.0 as the truth grows, so it is a floor on the true ceiling. **The window
+stays open even taking the ceiling as 1.0** — the constant clears it by 2.3×.
+
+**What it costs.** The three numeric bands hold an _exact-zero_ guarantee: an answer
+with no quantity earns nothing, structurally, and no constant has to be right for that
+to hold. This band trades that for a _quantitative_ guarantee: such an answer earns
+less than an honest miner, **provided 0.03595 is correct**. Three assertions in
+`tests/adversarial.rs` that read `assert_eq!(earned, 0.0)` are gated off this band,
+and `tests/metadata_band.rs` asserts `earned < 0.0826` in their place. That is a
+weaker claim, and it is the price of the six cases.
+
+Seven narrower triggers were measured first and every one was rejected —
+`cargo run -p corpus-eval --example rule6_probe -- --report` reproduces that. The
+measure that came closest puts a farm answer and a correct label answer at the same
+value of 2/7, so no threshold on it separates them at any setting. The discriminator
+is the intent, and `rank_answer` is never given the intent.
 
 ### The `label` band is not a tolerance change
 
