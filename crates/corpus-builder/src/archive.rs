@@ -221,8 +221,18 @@ pub fn build_index(
             .or_insert((p.lat, p.lon, date.to_string(), date.to_string()));
     }
 
+    // The groups come out of a HashMap, whose iteration order is not
+    // specified, so they are sorted before any request goes out. That
+    // fixes the request order, which fixes the cache-file write order
+    // and the order failures are reported in.
+    //
+    // `sort_by_key` is a STABLE sort, the same as the `sort_by` it
+    // replaces. The rounded (lat, lon) key is unique per group here, so
+    // stability is not load-bearing, but the workspace rule is that a
+    // sort in a path feeding a recorded artefact is stable and this
+    // keeps it.
     let mut ordered: Vec<_> = groups.into_iter().collect();
-    ordered.sort_by(|a, b| a.0.cmp(&b.0));
+    ordered.sort_by_key(|(key, _)| *key);
 
     let mut values = HashMap::new();
     let mut failed_groups = Vec::new();
