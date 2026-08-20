@@ -321,7 +321,21 @@ const HONEST: [Honest; 6] = [
 ];
 
 /// The bands an attenuated rule has to be safe on.
-const BANDS: [&str; 4] = ["weather", "price", "onchain", "label"];
+const BANDS: [&str; 5] = ["weather", "price", "onchain", "label", "metadata"];
+
+/// This function tells if a band would ever be registered on an intent
+/// whose wanted answer is a word.
+///
+/// The label pairs bound the attenuation from BELOW, and they may only
+/// bound a band that will actually meet them. An earlier version of
+/// this file let the FACT_CHECK row set the floor on every band, which
+/// forced the onchain figure up to 0.330 and made a scaffolding echo
+/// there worth 0.46. That row is a FACT_CHECK case and has no business
+/// bounding a gas intent. The bands and the cases are not a cross
+/// product.
+fn serves_label_intents(band: &str) -> bool {
+    matches!(band, "label" | "metadata")
+}
 
 /// The label side: the six the promotion set loses, as pairs.
 const PAIRS: [Pair; 6] = [
@@ -995,17 +1009,23 @@ fn attenuate() -> std::io::Result<()> {
         // alpha must satisfy alpha * good_text > bad, for every pair
         // whose bad answer is scored by the numeric branch. A bad
         // answer with no value is itself attenuated, so it cancels.
+        // The label pairs bound alpha from BELOW, and they may only
+        // bound a band that will actually meet them. A numeric band
+        // never will, so its floor is zero and its alpha stays zero,
+        // which is the exact-zero rule it already has.
         let mut alpha_min: f64 = 0.0;
-        for (index, pair) in PAIRS.iter().enumerate() {
-            let good_text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
-            if good_text <= 0.0 {
-                continue;
-            }
-            if holds_a_value(pair.bad) {
-                let bad = *bands[band]
-                    .get(&format!("pair{index:02}-bad"))
-                    .unwrap_or(&0.0);
-                alpha_min = alpha_min.max(bad / good_text);
+        if serves_label_intents(band) {
+            for (index, pair) in PAIRS.iter().enumerate() {
+                let good_text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
+                if good_text <= 0.0 {
+                    continue;
+                }
+                if holds_a_value(pair.bad) {
+                    let bad = *bands[band]
+                        .get(&format!("pair{index:02}-bad"))
+                        .unwrap_or(&0.0);
+                    alpha_min = alpha_min.max(bad / good_text);
+                }
             }
         }
 
@@ -1153,17 +1173,19 @@ fn attenuate() -> std::io::Result<()> {
                 }
             }
             let mut alpha_min: f64 = 0.0;
-            for (pair_index, pair) in PAIRS.iter().enumerate() {
-                let good_text = *label
-                    .get(&format!("pair{pair_index:02}-good"))
-                    .unwrap_or(&0.0);
-                if good_text <= 0.0 || !holds_a_value(pair.bad) {
-                    continue;
+            if serves_label_intents(band) {
+                for (pair_index, pair) in PAIRS.iter().enumerate() {
+                    let good_text = *label
+                        .get(&format!("pair{pair_index:02}-good"))
+                        .unwrap_or(&0.0);
+                    if good_text <= 0.0 || !holds_a_value(pair.bad) {
+                        continue;
+                    }
+                    let bad = *bands[band]
+                        .get(&format!("pair{pair_index:02}-bad"))
+                        .unwrap_or(&0.0);
+                    alpha_min = alpha_min.max(bad / good_text);
                 }
-                let bad = *bands[band]
-                    .get(&format!("pair{pair_index:02}-bad"))
-                    .unwrap_or(&0.0);
-                alpha_min = alpha_min.max(bad / good_text);
             }
             println!(
                 "   {:<9} {:<12} {:>12.6} {:>12.6} {:>12.6}  {}",
@@ -1202,15 +1224,25 @@ fn attenuate() -> std::io::Result<()> {
             }
         }
         let mut alpha_min: f64 = 0.0;
-        for (index, pair) in PAIRS.iter().enumerate() {
-            let good_text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
-            if good_text <= 0.0 || !holds_a_value(pair.bad) {
-                continue;
+        if serves_label_intents(band) {
+            for (index, pair) in PAIRS.iter().enumerate() {
+                let good_text = *label.get(&format!("pair{index:02}-good")).unwrap_or(&0.0);
+                if good_text <= 0.0 || !holds_a_value(pair.bad) {
+                    continue;
+                }
+                let bad = *bands[band]
+                    .get(&format!("pair{index:02}-bad"))
+                    .unwrap_or(&0.0);
+                alpha_min = alpha_min.max(bad / good_text);
             }
-            let bad = *bands[band]
-                .get(&format!("pair{index:02}-bad"))
-                .unwrap_or(&0.0);
-            alpha_min = alpha_min.max(bad / good_text);
+        }
+        // A band that serves no label intent keeps alpha at zero, so
+        // there is no window to print and nothing to pick from it.
+        if !serves_label_intents(band) {
+            println!("   {band}: serves no label intent, so alpha stays 0.0 and the");
+            println!("      exact-zero guarantee is unchanged");
+            println!();
+            continue;
         }
         if alpha_min >= alpha_max {
             println!("   {band}: the window is empty, so no alpha is printed");
