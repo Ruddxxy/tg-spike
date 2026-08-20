@@ -1,6 +1,6 @@
 # tg-spike
 
-[![CI](https://github.com/Ruddxxy/tg-spike/actions/workflows/ci.yml/badge.svg)](https://github.com/Ruddxxy/tg-spike/actions/workflows/ci.yml)
+[![CI](https://github.com/Ruddxxy/tg-spike/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ruddxxy/tg-spike/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A canonical scoring script for the Telegraph Protocol, written for Track 2, plus
@@ -246,9 +246,12 @@ implemented here.
 ## Build and run
 
 Rust stable with the `wasm32-unknown-unknown` target, and Go 1.25+ for the wazero
-host. `tools/build-variants.sh` also needs `wasm-tools` and `python3`, and it
-refuses to run without them: `wasm-tools` is what reads the import list, and an
-import check that cannot run is worse than no import check.
+host. `tools/wazero-runner/go.mod` pins `go 1.25.0`, so an older Go fetches that
+toolchain automatically and the build works — unless `GOTOOLCHAIN=local` is set,
+which turns the version gap into a hard error. `tools/build-variants.sh` also
+needs `wasm-tools` and `python3`, and it refuses to run without them:
+`wasm-tools` is what reads the import list, and an import check that cannot run
+is worse than no import check.
 
 ```bash
 rustup target add wasm32-unknown-unknown
